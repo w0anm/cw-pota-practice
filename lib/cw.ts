@@ -112,12 +112,13 @@ export const playMorseAudio = (
     }
   }
 
-  // Schedule context close and completion callback
+  // Schedule context close and completion callback with 1-second tail to prevent clipping
   const totalDuration = audioTime - audioContext.currentTime;
+  const tailTime = 1000; // 1 second tail to prevent last character clipping
   const timeoutId = setTimeout(() => {
     audioContext.close();
     onComplete?.();
-  }, totalDuration * 1000 + 100);
+  }, totalDuration * 1000 + tailTime);
 
   // Return cancellation function
   return () => {

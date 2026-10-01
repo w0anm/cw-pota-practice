@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { playMorseAudio, type MorseSettings } from '@/lib/cw';
-import { callDatabase } from '@/lib/callDatabase';
+import { loadPOTACallDatabase, getCallDatabase, type CallRecord } from '@/lib/callDatabase';
 
 const initialSettings: MorseSettings = {
   wpm: 18,
@@ -13,12 +13,13 @@ const initialSettings: MorseSettings = {
 };
 
 function getRandomCall() {
-  return callDatabase[Math.floor(Math.random() * callDatabase.length)];
+  const db = getCallDatabase();
+  return db[Math.floor(Math.random() * db.length)];
 }
 
 export default function HomePage() {
   const [settings, setSettings] = useState<MorseSettings>(initialSettings);
-  const [currentCall, setCurrentCall] = useState(getRandomCall());
+  const [currentCall, setCurrentCall] = useState<CallRecord>(getRandomCall());
   const [userInput, setUserInput] = useState('');
   const [status, setStatus] = useState('Ready for the next call');
   const [firstTimeCorrect, setFirstTimeCorrect] = useState(0);
@@ -29,6 +30,8 @@ export default function HomePage() {
   const [callAttempts, setCallAttempts] = useState(0);
   const [missedCall, setMissedCall] = useState<string | null>(null);
   const [sendCooldown, setSendCooldown] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshTime, setLastRefreshTime] = useState<string | null>(null);
   const playbackRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -37,6 +40,17 @@ export default function HomePage() {
         playbackRef.current();
       }
     };
+  }, []);
+
+  // Load POTA data on mount
+  useEffect(() => {
+    const initializePOTA = async () => {
+      await loadPOTACallDatabase();
+      // Refresh the current call to potentially use POTA data
+      setCurrentCall(getRandomCall());
+      setLastRefreshTime(new Date().toLocaleTimeString());
+    };
+    initializePOTA();
   }, []);
 
   useEffect(() => {
@@ -60,9 +74,28 @@ export default function HomePage() {
   }, [currentCall, settings]);
 
   const callListText = useMemo(
-    () => callDatabase.map((item) => item.callsign).join(', '),
+    () => getCallDatabase().map((item) => item.callsign).join(', '),
     []
   );
+
+  const handleRefreshPOTA = async () => {
+    setIsRefreshing(true);
+    setStatus('Refreshing POTA data...');
+    try {
+      await loadPOTACallDatabase(true); // Force refresh
+      setCurrentCall(getRandomCall());
+      setStatus('POTA data refreshed');
+      setLastRefreshTime(new Date().toLocaleTimeString());
+      setTimeout(() => {
+        setStatus('Ready to copy');
+      }, 1500);
+    } catch (error) {
+      setStatus('Failed to refresh POTA data');
+      console.error(error);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
 
   const playCurrentCall = () => {
     if (isPlaying || sendCooldown) return;
@@ -233,6 +266,21 @@ export default function HomePage() {
               />
             </label>
           )}
+
+          <div>
+            <button 
+              onClick={handleRefreshPOTA} 
+              disabled={isRefreshing}
+              className="secondary"
+            >
+              {isRefreshing ? 'Refreshing...' : 'Refresh POTA Data'}
+            </button>
+            {lastRefreshTime && (
+              <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
+                Last refreshed: {lastRefreshTime}
+              </p>
+            )}
+          </div>
         </div>
       </section>
 
@@ -241,6 +289,11 @@ export default function HomePage() {
           <div>
             <p className="eyebrow">Call attempt {callAttempts}/3</p>
             <h2>Listen to the call</h2>
+            {currentCall.parkCode && (
+              <p style={{ fontSize: '0.95rem', color: 'var(--primary)', marginTop: '0.5rem' }}>
+                {currentCall.location} ({currentCall.parkCode})
+              </p>
+            )}
           </div>
           <div className="button-stack">
             <button onClick={playCurrentCall} disabled={isPlaying || sendCooldown}>

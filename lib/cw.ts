@@ -23,8 +23,7 @@ const getMorseForText = (text: string) =>
     .map((char) => {
       if (char === ' ') return '/';
       return MORSE[char] ?? '';
-    })
-    .join(' ');
+    });
 
 export const playMorseAudio = (
   text: string,
@@ -52,59 +51,65 @@ export const playMorseAudio = (
   const letterGap = settings.farnsworth ? dotDuration * 7 : dotDuration * 3; // space between letters
   const wordGap = settings.farnsworth ? dotDuration * 14 : dotDuration * 7; // space between words
 
-  const pattern = getMorseForText(text).split('');
+  const morseLetters = getMorseForText(text);
   let audioTime = audioContext.currentTime;
   const oscillators: OscillatorNode[] = [];
 
-  // Pre-schedule all symbols
-  for (let i = 0; i < pattern.length; i++) {
-    const char = pattern[i];
+  // Process each letter
+  for (let letterIdx = 0; letterIdx < morseLetters.length; letterIdx++) {
+    const morse = morseLetters[letterIdx];
 
-    if (char === ' ') {
-      // Space between symbols (dot/dash) within a letter
-      audioTime += symbolGap;
-      continue;
-    }
-
-    if (char === '/') {
-      // Word gap (includes the letter gap, so subtract one letter gap)
+    // Handle word breaks
+    if (morse === '/') {
       audioTime += wordGap;
       continue;
     }
 
-    const isDot = char === '.';
-    const duration = isDot ? dotDuration : dashDuration;
+    // Split the morse code into individual symbols (dots and dashes)
+    const symbols = morse.split('');
 
-    // Create oscillator
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
-    oscillator.type = 'sine';
-    oscillator.frequency.value = settings.frequency;
+    for (let symIdx = 0; symIdx < symbols.length; symIdx++) {
+      const symbol = symbols[symIdx];
+      const isDot = symbol === '.';
+      const duration = isDot ? dotDuration : dashDuration;
 
-    // Smooth envelope to prevent clicking
-    const rampTime = 0.003; // 3ms rise/fall time
-    gainNode.gain.setValueAtTime(0, audioTime);
-    gainNode.gain.linearRampToValueAtTime(0.15, audioTime + rampTime);
-    gainNode.gain.setValueAtTime(0.15, audioTime + duration - rampTime);
-    gainNode.gain.linearRampToValueAtTime(0, audioTime + duration);
+      // Create oscillator
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = settings.frequency;
 
-    oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-    oscillator.start(audioTime);
-    oscillator.stop(audioTime + duration);
-    oscillators.push(oscillator);
+      // Smooth envelope to prevent clicking
+      const rampTime = 0.003; // 3ms rise/fall time
+      gainNode.gain.setValueAtTime(0, audioTime);
+      gainNode.gain.linearRampToValueAtTime(0.15, audioTime + rampTime);
+      gainNode.gain.setValueAtTime(0.15, audioTime + duration - rampTime);
+      gainNode.gain.linearRampToValueAtTime(0, audioTime + duration);
 
-    // Check if next character is space (letter gap) or / (word gap) or end
-    const nextChar = pattern[i + 1];
-    if (nextChar === ' ') {
-      audioTime += duration + symbolGap;
-    } else if (nextChar === '/') {
-      audioTime += duration + letterGap;
-    } else if (i === pattern.length - 1) {
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.start(audioTime);
+      oscillator.stop(audioTime + duration);
+      oscillators.push(oscillator);
+
       audioTime += duration;
-    } else {
-      // Next is a dot/dash, add letter gap
-      audioTime += duration + letterGap;
+
+      // Add gap after this symbol
+      if (symIdx < symbols.length - 1) {
+        // Gap within a letter (between dot/dash)
+        audioTime += symbolGap;
+      } else {
+        // Gap after the letter (unless it's the last letter)
+        if (letterIdx < morseLetters.length - 1) {
+          const nextMorse = morseLetters[letterIdx + 1];
+          if (nextMorse === '/') {
+            // Next is a word break, don't add letter gap yet (word gap will handle it)
+            audioTime += letterGap;
+          } else {
+            audioTime += letterGap;
+          }
+        }
+      }
     }
   }
 
@@ -124,4 +129,4 @@ export const playMorseAudio = (
   };
 };
 
-export const encodeMorse = (text: string) => getMorseForText(text);
+export const encodeMorse = (text: string) => getMorseForText(text).join(' ');

@@ -8,6 +8,8 @@ const initialSettings: MorseSettings = {
   wpm: 18,
   farnsworth: true,
   frequency: 700,
+  tailSilenceMode: 'fixed',
+  fixedSilenceMs: 1000,
 };
 
 function getRandomCall() {
@@ -55,7 +57,7 @@ export default function HomePage() {
 
       return () => window.clearTimeout(cooldownTimer);
     }
-  }, [currentCall]);
+  }, [currentCall, settings]);
 
   const callListText = useMemo(
     () => callDatabase.map((item) => item.callsign).join(', '),
@@ -145,7 +147,7 @@ export default function HomePage() {
     playCurrentCall();
   };
 
-  const handleSettingsChange = (key: keyof MorseSettings, value: number | boolean) => {
+  const handleSettingsChange = (key: keyof MorseSettings, value: number | boolean | string) => {
     setSettings((current) => ({ ...current, [key]: value }));
   };
 
@@ -205,6 +207,32 @@ export default function HomePage() {
               onChange={(event) => handleSettingsChange('frequency', Number(event.target.value))}
             />
           </label>
+
+          <label>
+            <span>Tail silence mode</span>
+            <select
+              value={settings.tailSilenceMode}
+              onChange={(event) => handleSettingsChange('tailSilenceMode', event.target.value)}
+            >
+              <option value="fixed">Fixed (1s)</option>
+              <option value="wpm-based">WPM-based</option>
+              <option value="character-based">Character-based</option>
+            </select>
+          </label>
+
+          {settings.tailSilenceMode === 'fixed' && (
+            <label>
+              <span>Silence duration (ms)</span>
+              <input
+                type="number"
+                min={100}
+                max={2000}
+                step={100}
+                value={settings.fixedSilenceMs}
+                onChange={(event) => handleSettingsChange('fixedSilenceMs', Number(event.target.value))}
+              />
+            </label>
+          )}
         </div>
       </section>
 

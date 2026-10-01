@@ -24,8 +24,8 @@ export default function HomePage() {
   const [attempts, setAttempts] = useState(0);
   const [lastResult, setLastResult] = useState<'correct' | 'incorrect' | 'missed' | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [callAttempts, setCallAttempts] = useState(0); // Track attempts for current call
-  const [missedCall, setMissedCall] = useState<string | null>(null); // Display missed call
+  const [callAttempts, setCallAttempts] = useState(0);
+  const [missedCall, setMissedCall] = useState<string | null>(null);
   const playbackRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -35,6 +35,20 @@ export default function HomePage() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    // Auto-play the new call after it has been selected
+    // We don't want to trigger on the initial render, only when currentCall changes.
+    if (currentCall) {
+      setIsPlaying(true);
+      setStatus('Sending...');
+      const stop = playMorseAudio(currentCall.callsign, settings, () => {
+        setIsPlaying(false);
+        setStatus('Ready to copy');
+      });
+      playbackRef.current = stop;
+    }
+  }, [currentCall]);
 
   const callListText = useMemo(
     () => callDatabase.map((item) => item.callsign).join(', '),
@@ -52,7 +66,6 @@ export default function HomePage() {
   };
 
   const handleNextCall = () => {
-    // If call wasn't completed, mark as missed
     if (callAttempts > 0 && lastResult !== 'correct') {
       setMissedCall(currentCall.callsign);
     }
@@ -69,7 +82,7 @@ export default function HomePage() {
     event.preventDefault();
     const normalizedValue = userInput.trim().toUpperCase();
     const expectedValue = currentCall.callsign.toUpperCase();
-    
+
     const newCallAttempts = callAttempts + 1;
     setCallAttempts(newCallAttempts);
     setAttempts((current) => current + 1);
@@ -79,22 +92,34 @@ export default function HomePage() {
       setLastResult('correct');
       setStatus(`Correct copy: ${expectedValue}`);
       setMissedCall(null);
-      setTimeout(() => handleNextCall(), 800);
+      setTimeout(() => {
+        const next = getRandomCall();
+        setCurrentCall(next);
+        setUserInput('');
+        setLastResult(null);
+        setCallAttempts(0);
+        setStatus('New call ready. Press Play call.');
+      }, 800);
       return;
     }
 
-    // Incorrect answer
     if (newCallAttempts < 3) {
       setLastResult('incorrect');
       setStatus('Not quite right');
       setRepeats((count) => count + 1);
     } else {
-      // Third attempt failed - mark as missed
       setLastResult('missed');
       setStatus(`Missed Call: ${expectedValue}`);
       setMissedCall(expectedValue);
       setRepeats((count) => count + 1);
-      setTimeout(() => handleNextCall(), 1500);
+      setTimeout(() => {
+        const next = getRandomCall();
+        setCurrentCall(next);
+        setUserInput('');
+        setLastResult(null);
+        setCallAttempts(0);
+        setStatus('New call ready. Press Play call.');
+      }, 1500);
     }
   };
 

@@ -13,23 +13,28 @@ const MORSE: Record<string, string> = {
   '/': '-..-.', '?': '..--..', '.': '.-.-.-', ',': '--..--', '=': '-...-'
 };
 
-// Paris standard: 50 dots per word at 1 WPM = 1.2 seconds per dot
-const dotDurationForWpm = (wpm: number) => 1200 / wpm; // milliseconds
-
-const getMorseForText = (text: string) =>
+/**
+ * Convert text to array of Morse code strings
+ * Spaces in input become '/' (word break marker)
+ */
+const getMorseLetters = (text: string): string[] =>
   text
     .toUpperCase()
     .split('')
-    .map((char) => {
-      if (char === ' ') return '/';
-      return MORSE[char] ?? '';
-    });
+    .map((char) => (char === ' ' ? '/' : MORSE[char] ?? ''));
 
+/**
+ * Play Morse code audio for the given text
+ * @param text - Text to encode and play
+ * @param settings - WPM, Farnsworth mode, and frequency settings
+ * @param onComplete - Callback when playback finishes
+ * @returns Function to stop/cancel playback
+ */
 export const playMorseAudio = (
   text: string,
   settings: MorseSettings,
   onComplete?: () => void
-) => {
+): (() => void) => {
   const AudioCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
 
   if (!AudioCtor) {
@@ -38,24 +43,22 @@ export const playMorseAudio = (
   }
 
   const audioContext = new AudioCtor();
-  const dotDurationMs = dotDurationForWpm(settings.wpm);
-  const dotDuration = dotDurationMs / 1000; // convert to seconds for Web Audio API
+
+  // Calculate timing based on WPM (Paris standard: 1200ms / WPM = dot duration in ms)
+  const dotDurationMs = 1200 / settings.wpm;
+  const dotDuration = dotDurationMs / 1000; // Convert to seconds for Web Audio API
   const dashDuration = dotDuration * 3;
 
-  // Standard CW timing:
-  // - Space between dot/dash within a letter: 1 dot
-  // - Space between letters: 3 dots
-  // - Space between words: 7 dots
-  // Farnsworth spacing increases letter/word gaps while keeping dot/dash timing
-  const symbolGap = dotDuration; // space between dot/dash within a letter (always 1 dot)
-  const letterGap = settings.farnsworth ? dotDuration * 7 : dotDuration * 3; // space between letters
-  const wordGap = settings.farnsworth ? dotDuration * 14 : dotDuration * 7; // space between words
+  // Farnsworth spacing: increase gaps between letters/words, keep dot/dash timing tight
+  const symbolGap = dotDuration; // Gap between dot/dash within a letter: 1 dot
+  const letterGap = settings.farnsworth ? dotDuration * 7 : dotDuration * 3; // Gap between letters
+  const wordGap = settings.farnsworth ? dotDuration * 14 : dotDuration * 7; // Gap between words
 
-  const morseLetters = getMorseForText(text);
+  const morseLetters = getMorseLetters(text);
   let audioTime = audioContext.currentTime;
   const oscillators: OscillatorNode[] = [];
 
-  // Process each letter
+  // Schedule all symbols
   for (let letterIdx = 0; letterIdx < morseLetters.length; letterIdx++) {
     const morse = morseLetters[letterIdx];
 
@@ -65,7 +68,7 @@ export const playMorseAudio = (
       continue;
     }
 
-    // Split the morse code into individual symbols (dots and dashes)
+    // Process each symbol (dot/dash) in the letter
     const symbols = morse.split('');
 
     for (let symIdx = 0; symIdx < symbols.length; symIdx++) {
@@ -73,14 +76,15 @@ export const playMorseAudio = (
       const isDot = symbol === '.';
       const duration = isDot ? dotDuration : dashDuration;
 
-      // Create oscillator
+      // Create oscillator and gain node
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
+
       oscillator.type = 'sine';
       oscillator.frequency.value = settings.frequency;
 
-      // Smooth envelope to prevent clicking
-      const rampTime = 0.003; // 3ms rise/fall time
+      // Smooth attack/release envelope (3ms) to prevent clicking
+      const rampTime = 0.003;
       gainNode.gain.setValueAtTime(0, audioTime);
       gainNode.gain.linearRampToValueAtTime(0.15, audioTime + rampTime);
       gainNode.gain.setValueAtTime(0.15, audioTime + duration - rampTime);
@@ -88,39 +92,36 @@ export const playMorseAudio = (
 
       oscillator.connect(gainNode);
       gainNode.connect(audioContext.destination);
+
       oscillator.start(audioTime);
       oscillator.stop(audioTime + duration);
       oscillators.push(oscillator);
 
       audioTime += duration;
 
-      // Add gap after this symbol
+      // Add gap after symbol
       if (symIdx < symbols.length - 1) {
-        // Gap within a letter (between dot/dash)
+        // Gap between symbols within a letter
         audioTime += symbolGap;
-      } else {
-        // Gap after the letter (unless it's the last letter)
-        if (letterIdx < morseLetters.length - 1) {
-          const nextMorse = morseLetters[letterIdx + 1];
-          if (nextMorse === '/') {
-            // Next is a word break, don't add letter gap yet (word gap will handle it)
-            audioTime += letterGap;
-          } else {
-            audioTime += letterGap;
-          }
-        }
       }
+    }
+
+    // Add gap after letter (if not the last letter)
+    if (letterIdx < morseLetters.length - 1 && morseLetters[letterIdx + 1] !== '/') {
+      audioTime += letterGap;
     }
   }
 
-  // Close context after all audio is done
+  // Schedule context close and completion callback
   const totalDuration = audioTime - audioContext.currentTime;
-  setTimeout(() => {
+  const timeoutId = setTimeout(() => {
     audioContext.close();
     onComplete?.();
   }, totalDuration * 1000 + 100);
 
+  // Return cancellation function
   return () => {
+    clearTimeout(timeoutId);
     try {
       audioContext.close();
     } catch (e) {
@@ -129,4 +130,12 @@ export const playMorseAudio = (
   };
 };
 
-export const encodeMorse = (text: string) => getMorseForText(text).join(' ');
+/**
+ * Encode text to Morse code string (for reference/display)
+ * @param text - Text to encode
+ * @returns Morse code with spaces between symbols and words
+ */
+export const encodeMorse = (text: string): string =>
+  getMorseLetters(text)
+    .map((morse) => morse.split('').join(' '))
+    .join(' | ');

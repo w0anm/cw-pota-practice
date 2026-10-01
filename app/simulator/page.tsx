@@ -28,9 +28,7 @@ export default function SimulatorPage() {
   const [sessionStarted, setSessionStarted] = useState(false);
   const [stationCall, setStationCall] = useState<string>('');
   const [currentState, setCurrentState] = useState<string>('');
-  const [readability, setReadability] = useState('');
-  const [strength, setStrength] = useState('');
-  const [tone, setTone] = useState('');
+  const [rstReport, setRstReport] = useState('');
   const [status, setStatus] = useState('Ready for the next QSO');
   const [qsos, setQsos] = useState<QSO[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -45,17 +43,11 @@ export default function SimulatorPage() {
     };
   }, []);
 
-  const activeCall = useMemo(() => {
-    return stationCall || 'UNKNOWN';
-  }, [stationCall]);
-
   const startSession = () => {
     const nextCall = getRandomCall();
     setStationCall(nextCall.callsign);
     setCurrentState(randomState());
-    setReadability('');
-    setStrength('');
-    setTone('');
+    setRstReport('');
     setStatus('Station is calling...');
     setSessionStarted(true);
     setSessionComplete(false);
@@ -86,24 +78,24 @@ export default function SimulatorPage() {
     if (!stationCall) return;
 
     if (phase === 'call') {
-      const next = getRandomCall();
-      setStationCall(next.callsign);
-      setCurrentState(randomState());
       setStatus('Send your RST and state');
       setPhase('report');
-      setReadability('');
-      setStrength('');
-      setTone('');
+      setRstReport('');
       return;
     }
 
     if (phase === 'report') {
+      // Parse RST from combined string (e.g., "599" -> R=5, S=9, T=9)
+      const r = rstReport.charAt(0);
+      const s = rstReport.charAt(1);
+      const t = rstReport.charAt(2);
+
       const qso = createQSO(
         stationCall,
         yourCall,
-        readability,
-        strength,
-        tone,
+        r,
+        s,
+        t,
         currentState
       );
 
@@ -122,9 +114,7 @@ export default function SimulatorPage() {
         const next = getRandomCall();
         setStationCall(next.callsign);
         setCurrentState(randomState());
-        setReadability('');
-        setStrength('');
-        setTone('');
+        setRstReport('');
         setPhase('call');
       }
     }
@@ -192,7 +182,7 @@ export default function SimulatorPage() {
           <div className="call-header">
             <div>
               <p className="eyebrow">Unknown station</p>
-              <h2>{activeCall}</h2>
+              <h2>---</h2>
             </div>
             <div className="button-stack">
               <button onClick={() => playCurrentStationCall(stationCall)} disabled={isPlaying || sendCooldown}>
@@ -207,41 +197,15 @@ export default function SimulatorPage() {
 
           {phase === 'report' && (
             <div className="exchange-form">
-              <div className="rst-grid">
-                <label>
-                  <span>Readability</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={5}
-                    value={readability}
-                    onChange={(event) => setReadability(event.target.value)}
-                    placeholder="R"
-                  />
-                </label>
-                <label>
-                  <span>Strength</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={9}
-                    value={strength}
-                    onChange={(event) => setStrength(event.target.value)}
-                    placeholder="S"
-                  />
-                </label>
-                <label>
-                  <span>Tone</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={9}
-                    value={tone}
-                    onChange={(event) => setTone(event.target.value)}
-                    placeholder="T"
-                  />
-                </label>
-              </div>
+              <label>
+                <span>RST Report (e.g., 599)</span>
+                <input
+                  value={rstReport}
+                  onChange={(event) => setRstReport(event.target.value)}
+                  placeholder="599"
+                  maxLength={3}
+                />
+              </label>
 
               <label>
                 <span>State / Province</span>

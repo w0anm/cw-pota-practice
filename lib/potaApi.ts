@@ -35,13 +35,14 @@ const getThirtyDaysAgoDate = (): string => {
 const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
   try {
     const fromDate = getThirtyDaysAgoDate();
-    const response = await fetch(
-      `${POTA_API_BASE}/activations?activatedFrom=${fromDate}`,
-      {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(10000), // 10 second timeout
-      }
-    );
+    const url = `${POTA_API_BASE}/activations?activatedFrom=${fromDate}`;
+    
+    console.log('Fetching POTA activations from:', url);
+    
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(10000), // 10 second timeout
+    });
 
     if (!response.ok) {
       console.error(`POTA API error: ${response.status}`);
@@ -49,15 +50,22 @@ const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
     }
 
     const data = await response.json();
+    console.log('POTA API raw response:', data);
 
     // Extract unique callsigns with their park information
     const activationMap = new Map<string, POTAActivation>();
 
     if (Array.isArray(data)) {
+      console.log(`Processing ${data.length} activations from POTA API`);
+      
       data.forEach((activation: any) => {
-        const callsign = activation.callsign?.toUpperCase();
-        const parkCode = activation.parkCode || 'UNKNOWN';
-        const parkName = activation.parkName || 'Unknown Park';
+        // POTA API uses 'userCallsign' for the activator's call
+        const callsign = (activation.userCallsign || activation.callsign)?.toUpperCase();
+        // POTA API uses 'reference' for park code (e.g., K-1234)
+        const parkCode = activation.reference || activation.parkCode || 'UNKNOWN';
+        // Park name might be under different keys
+        const parkName = activation.parkName || activation.park || 'Unknown Park';
+        const qsoCount = activation.qsoCount || activation.qualifyingCount || 0;
 
         if (callsign && !activationMap.has(callsign)) {
           activationMap.set(callsign, {
@@ -65,13 +73,18 @@ const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
             parkCode,
             parkName,
             date: activation.activatedDate || new Date().toISOString(),
-            qsoCount: activation.qsoCount || 0,
+            qsoCount,
           });
+          console.log(`Added: ${callsign} from ${parkCode} (${parkName})`);
         }
       });
+    } else {
+      console.error('POTA API response is not an array:', data);
     }
 
-    return Array.from(activationMap.values());
+    const result = Array.from(activationMap.values());
+    console.log(`Successfully processed ${result.length} unique activations`);
+    return result;
   } catch (error) {
     console.error('Failed to fetch POTA activations:', error);
     return [];
@@ -84,17 +97,23 @@ const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
 const getCachedActivations = (): POTAActivation[] | null => {
   try {
     const cached = localStorage.getItem(CACHE_KEY);
-    if (!cached) return null;
+    if (!cached) {
+      console.log('No cached POTA data found');
+      return null;
+    }
 
     const { activations, timestamp }: CachedPOTAData = JSON.parse(cached);
     const now = Date.now();
+    const age = now - timestamp;
 
     // Check if cache is still valid
-    if (now - timestamp < CACHE_DURATION_MS) {
+    if (age < CACHE_DURATION_MS) {
+      console.log(`Using cached POTA data (${Math.round(age / 1000 / 60)} minutes old, ${activations.length} activations)`);
       return activations;
     }
 
     // Cache expired, remove it
+    console.log('POTA cache expired, removing');
     localStorage.removeItem(CACHE_KEY);
     return null;
   } catch (error) {
@@ -113,6 +132,7 @@ const setCachedActivations = (activations: POTAActivation[]): void => {
       timestamp: Date.now(),
     };
     localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+    console.log(`Cached ${activations.length} POTA activations`);
   } catch (error) {
     console.error('Failed to cache activations:', error);
   }
@@ -126,6 +146,8 @@ const setCachedActivations = (activations: POTAActivation[]): void => {
 export const getPOTAActivations = async (
   forceRefresh = false
 ): Promise<POTAActivation[]> => {
+  console.log(`getPOTAActivations called (forceRefresh: ${forceRefresh})`);
+  
   // Check cache first if not forcing refresh
   if (!forceRefresh) {
     const cached = getCachedActivations();
@@ -135,11 +157,14 @@ export const getPOTAActivations = async (
   }
 
   // Fetch fresh data from API
+  console.log('Fetching fresh data from POTA API');
   const activations = await fetchActivationsFromPOTA();
 
   // Cache the results if we got any
   if (activations.length > 0) {
     setCachedActivations(activations);
+  } else {
+    console.warn('No activations returned from POTA API');
   }
 
   return activations;
@@ -151,6 +176,7 @@ export const getPOTAActivations = async (
 export const clearPOTACache = (): void => {
   try {
     localStorage.removeItem(CACHE_KEY);
+    console.log('Cleared POTA cache');
   } catch (error) {
     console.error('Failed to clear cache:', error);
   }

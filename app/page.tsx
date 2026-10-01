@@ -26,6 +26,7 @@ export default function HomePage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [callAttempts, setCallAttempts] = useState(0);
   const [missedCall, setMissedCall] = useState<string | null>(null);
+  const [sendCooldown, setSendCooldown] = useState(false);
   const playbackRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -37,16 +38,22 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    // Auto-play the new call after it has been selected
-    // We don't want to trigger on the initial render, only when currentCall changes.
+    // Auto-play the new call after it has been selected.
     if (currentCall) {
       setIsPlaying(true);
       setStatus('Sending...');
+      setSendCooldown(true);
       const stop = playMorseAudio(currentCall.callsign, settings, () => {
         setIsPlaying(false);
         setStatus('Ready to copy');
       });
       playbackRef.current = stop;
+
+      const cooldownTimer = window.setTimeout(() => {
+        setSendCooldown(false);
+      }, 2000);
+
+      return () => window.clearTimeout(cooldownTimer);
     }
   }, [currentCall]);
 
@@ -56,13 +63,23 @@ export default function HomePage() {
   );
 
   const playCurrentCall = () => {
+    if (isPlaying || sendCooldown) return;
+
     setIsPlaying(true);
     setStatus('Sending...');
+    setSendCooldown(true);
+
     const stop = playMorseAudio(currentCall.callsign, settings, () => {
       setIsPlaying(false);
       setStatus('Ready to copy');
+      setSendCooldown(false);
     });
+
     playbackRef.current = stop;
+
+    window.setTimeout(() => {
+      setSendCooldown(false);
+    }, 2000);
   };
 
   const handleNextCall = () => {
@@ -198,10 +215,10 @@ export default function HomePage() {
             <h2>Listen to the call</h2>
           </div>
           <div className="button-stack">
-            <button onClick={playCurrentCall} disabled={isPlaying}>
-              {isPlaying ? 'Sending...' : 'Play call'}
+            <button onClick={playCurrentCall} disabled={isPlaying || sendCooldown}>
+              {isPlaying ? 'Sending...' : sendCooldown ? 'Wait 2s...' : 'Play call'}
             </button>
-            <button className="secondary" onClick={handleRepeat}>
+            <button className="secondary" onClick={handleRepeat} disabled={isPlaying || sendCooldown}>
               Repeat key
             </button>
             <button className="secondary" onClick={handleNextCall}>

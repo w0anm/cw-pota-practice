@@ -22,8 +22,10 @@ export default function HomePage() {
   const [firstTimeCorrect, setFirstTimeCorrect] = useState(0);
   const [repeats, setRepeats] = useState(0);
   const [attempts, setAttempts] = useState(0);
-  const [lastResult, setLastResult] = useState<'correct' | 'incorrect' | null>(null);
+  const [lastResult, setLastResult] = useState<'correct' | 'incorrect' | 'missed' | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [callAttempts, setCallAttempts] = useState(0); // Track attempts for current call
+  const [missedCall, setMissedCall] = useState<string | null>(null); // Display missed call
   const playbackRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -41,39 +43,59 @@ export default function HomePage() {
 
   const playCurrentCall = () => {
     setIsPlaying(true);
-    setStatus(`Sending ${currentCall.callsign}`);
+    setStatus('Sending...');
     const stop = playMorseAudio(currentCall.callsign, settings, () => {
       setIsPlaying(false);
-      setStatus(`Finished sending ${currentCall.callsign}`);
+      setStatus('Ready to copy');
     });
     playbackRef.current = stop;
   };
 
   const handleNextCall = () => {
+    // If call wasn't completed, mark as missed
+    if (callAttempts > 0 && lastResult !== 'correct') {
+      setMissedCall(currentCall.callsign);
+    }
+
     const next = getRandomCall();
     setCurrentCall(next);
     setUserInput('');
     setLastResult(null);
-    setStatus(`New call ready: ${next.callsign}`);
+    setCallAttempts(0);
+    setStatus('New call ready. Press Play call.');
   };
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     const normalizedValue = userInput.trim().toUpperCase();
     const expectedValue = currentCall.callsign.toUpperCase();
+    
+    const newCallAttempts = callAttempts + 1;
+    setCallAttempts(newCallAttempts);
     setAttempts((current) => current + 1);
 
     if (normalizedValue === expectedValue) {
       setFirstTimeCorrect((count) => count + 1);
       setLastResult('correct');
       setStatus(`Correct copy: ${expectedValue}`);
+      setMissedCall(null);
       setTimeout(() => handleNextCall(), 800);
       return;
     }
 
-    setLastResult('incorrect');
-    setStatus(`Not quite. Try again or repeat the call.`);
-    setRepeats((count) => count + 1);
+    // Incorrect answer
+    if (newCallAttempts < 3) {
+      setLastResult('incorrect');
+      setStatus('Not quite right');
+      setRepeats((count) => count + 1);
+    } else {
+      // Third attempt failed - mark as missed
+      setLastResult('missed');
+      setStatus(`Missed Call: ${expectedValue}`);
+      setMissedCall(expectedValue);
+      setRepeats((count) => count + 1);
+      setTimeout(() => handleNextCall(), 1500);
+    }
   };
 
   const handleRepeat = () => {
@@ -147,8 +169,8 @@ export default function HomePage() {
       <section className="panel practice-panel">
         <div className="call-header">
           <div>
-            <p className="eyebrow">Current target</p>
-            <h2>{currentCall.callsign}</h2>
+            <p className="eyebrow">Call attempt {callAttempts}/3</p>
+            <h2>Listen to the call</h2>
           </div>
           <div className="button-stack">
             <button onClick={playCurrentCall} disabled={isPlaying}>
@@ -179,6 +201,13 @@ export default function HomePage() {
         <div className={`status ${lastResult ?? ''}`}>
           {status}
         </div>
+
+        {missedCall && (
+          <div className="missed-call-section">
+            <p className="eyebrow">Last missed</p>
+            <p className="missed-callsign">{missedCall}</p>
+          </div>
+        )}
       </section>
 
       <section className="panel">

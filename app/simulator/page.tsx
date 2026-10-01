@@ -29,12 +29,13 @@ export default function SimulatorPage() {
   const [sessionStarted, setSessionStarted] = useState(false);
   const [stationCall, setStationCall] = useState<string>('');
   const [currentState, setCurrentState] = useState<string>('');
+  const [yourCallEntry, setYourCallEntry] = useState('');
   const [rstReport, setRstReport] = useState('');
   const [status, setStatus] = useState('Ready for the next QSO');
   const [qsos, setQsos] = useState<QSO[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [sendCooldown, setSendCooldown] = useState(false);
-  const [phase, setPhase] = useState<'setup' | 'call' | 'report' | 'summary'>('setup');
+  const [phase, setPhase] = useState<'setup' | 'call' | 'yourcall' | 'yourreport' | 'response' | 'summary'>('setup');
   const playbackRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -44,6 +45,7 @@ export default function SimulatorPage() {
   }, []);
 
   const resetExchangeState = () => {
+    setYourCallEntry('');
     setRstReport('');
     setCurrentState(randomState());
   };
@@ -52,7 +54,7 @@ export default function SimulatorPage() {
     const nextCall = getRandomCall();
     setStationCall(nextCall.callsign);
     resetExchangeState();
-    setStatus('Unknown station calling...');
+    setStatus('Listening to station call...');
     setSessionStarted(true);
     setPhase('call');
     setQsos([]);
@@ -66,7 +68,7 @@ export default function SimulatorPage() {
 
     const stop = playMorseAudio(call, settings, () => {
       setIsPlaying(false);
-      setStatus('Listen for the response');
+      setStatus('Type your callsign response');
       setSendCooldown(false);
     });
 
@@ -77,51 +79,105 @@ export default function SimulatorPage() {
     }, 2000);
   };
 
-  const handleSubmitExchange = () => {
-    if (!stationCall) return;
-
-    if (phase === 'call') {
-      setStatus('Ready for your report and state');
-      setPhase('report');
-      setRstReport('');
+  const playYourCall = () => {
+    if (!yourCallEntry.trim()) {
+      setStatus('Enter your callsign first');
       return;
     }
 
-    if (phase === 'report') {
-      const digits = rstReport.trim().replace(/[^0-9]/g, '');
-      const r = digits.charAt(0) || '0';
-      const s = digits.charAt(1) || '0';
-      const t = digits.charAt(2) || '0';
+    setIsPlaying(true);
+    setStatus('Sending your call...');
+    setSendCooldown(true);
 
-      const qso = createQSO(
-        stationCall,
-        yourCall,
-        r,
-        s,
-        t,
-        currentState
-      );
+    const stop = playMorseAudio(yourCallEntry.toUpperCase(), settings, () => {
+      setIsPlaying(false);
+      setStatus('Station is sending their report...');
+      setSendCooldown(false);
+    });
 
-      setQsos((current) => [...current, qso]);
+    playbackRef.current = stop;
 
-      if (qso.valid) {
-        setStatus(`QSO logged successfully for ${qso.state}. Next station ready.`);
-      } else {
-        setStatus(qso.error || 'Invalid QSO. Check your RST and state and try again.');
-      }
+    window.setTimeout(() => {
+      setSendCooldown(false);
+    }, 2000);
+  };
 
-      if (qsos.length >= 9) {
-        setPhase('summary');
-        setSessionStarted(false);
-        return;
-      }
-
-      const next = getRandomCall();
-      setStationCall(next.callsign);
-      resetExchangeState();
-      setPhase('call');
-      playCurrentStationCall(next.callsign);
+  const handleSubmitYourCall = () => {
+    if (!yourCallEntry.trim()) {
+      setStatus('Enter your callsign first');
+      return;
     }
+    setStatus('Ready to send your callsign');
+    setPhase('yourreport');
+  };
+
+  const handlePlayResponse = () => {
+    setIsPlaying(true);
+    setStatus('Listening to their report...');
+    setSendCooldown(true);
+
+    // Play a simple response (could be "Roger" or similar)
+    const stop = playMorseAudio('R', settings, () => {
+      setIsPlaying(false);
+      setStatus('Enter the signal report you heard and state');
+      setSendCooldown(false);
+    });
+
+    playbackRef.current = stop;
+
+    window.setTimeout(() => {
+      setSendCooldown(false);
+    }, 2000);
+  };
+
+  const handleSubmitReport = () => {
+    if (!rstReport.trim()) {
+      setStatus('Enter your RST report');
+      return;
+    }
+    setPhase('response');
+    setStatus('Ready to send your report and state');
+  };
+
+  const handleCompleteExchange = () => {
+    if (!currentState.trim()) {
+      setStatus('Enter your state/province');
+      return;
+    }
+
+    const digits = rstReport.trim().replace(/[^0-9]/g, '');
+    const r = digits.charAt(0) || '0';
+    const s = digits.charAt(1) || '0';
+    const t = digits.charAt(2) || '0';
+
+    const qso = createQSO(
+      stationCall,
+      yourCallEntry.toUpperCase(),
+      r,
+      s,
+      t,
+      currentState
+    );
+
+    setQsos((current) => [...current, qso]);
+
+    if (qso.valid) {
+      setStatus(`QSO logged successfully for ${qso.state}.`);
+    } else {
+      setStatus(qso.error || 'Invalid QSO. Check your RST and state.');
+    }
+
+    if (qsos.length >= 9) {
+      setPhase('summary');
+      setSessionStarted(false);
+      return;
+    }
+
+    const next = getRandomCall();
+    setStationCall(next.callsign);
+    resetExchangeState();
+    setPhase('call');
+    playCurrentStationCall(next.callsign);
   };
 
   const handleSettingsChange = (key: keyof MorseSettings, value: number | boolean) => {
@@ -183,15 +239,50 @@ export default function SimulatorPage() {
         </section>
       )}
 
-      {phase !== 'setup' && phase !== 'summary' && (
+      {phase === 'call' && (
         <section className="panel practice-panel">
           <div className="call-header">
             <div>
-              <p className="eyebrow">Unknown station</p>
-              <h2>Unknown station</h2>
+              <p className="eyebrow">Unknown station calling</p>
+              <h2>Listening...</h2>
             </div>
             <div className="button-stack">
               <button onClick={() => playCurrentStationCall(stationCall)} disabled={isPlaying || sendCooldown}>
+                {isPlaying ? 'Sending...' : sendCooldown ? 'Wait 2s...' : 'Replay Call'}
+              </button>
+            </div>
+          </div>
+
+          <div className="status-row">
+            <strong>Status:</strong> {status}
+          </div>
+
+          <div className="exchange-form">
+            <label>
+              <span>Enter the callsign you heard</span>
+              <input
+                value={yourCallEntry}
+                onChange={(event) => setYourCallEntry(event.target.value.toUpperCase())}
+                placeholder="Enter your callsign response"
+              />
+            </label>
+          </div>
+
+          <button className="primary" onClick={handleSubmitYourCall}>
+            Next Step
+          </button>
+        </section>
+      )}
+
+      {phase === 'yourcall' && (
+        <section className="panel practice-panel">
+          <div className="call-header">
+            <div>
+              <p className="eyebrow">Send your callsign</p>
+              <h2>{yourCallEntry}</h2>
+            </div>
+            <div className="button-stack">
+              <button onClick={playYourCall} disabled={isPlaying || sendCooldown}>
                 {isPlaying ? 'Sending...' : sendCooldown ? 'Wait 2s...' : 'Send Call'}
               </button>
             </div>
@@ -201,31 +292,80 @@ export default function SimulatorPage() {
             <strong>Status:</strong> {status}
           </div>
 
-          {phase === 'report' && (
-            <div className="exchange-form">
-              <label>
-                <span>RST Report (e.g., 599)</span>
-                <input
-                  value={rstReport}
-                  onChange={(event) => setRstReport(event.target.value.toUpperCase().slice(0, 3))}
-                  placeholder="599"
-                  maxLength={3}
-                />
-              </label>
+          <button className="primary" onClick={() => {
+            setPhase('response');
+            setStatus('Ready to listen for their report');
+          }}>
+            Next Step
+          </button>
+        </section>
+      )}
 
-              <label>
-                <span>State / Province</span>
-                <input
-                  value={currentState}
-                  onChange={(event) => setCurrentState(event.target.value.toUpperCase())}
-                  placeholder="CO"
-                />
-              </label>
+      {phase === 'yourreport' && (
+        <section className="panel practice-panel">
+          <div className="call-header">
+            <div>
+              <p className="eyebrow">Send your callsign</p>
+              <h2>{yourCallEntry}</h2>
             </div>
-          )}
+            <div className="button-stack">
+              <button onClick={playYourCall} disabled={isPlaying || sendCooldown}>
+                {isPlaying ? 'Sending...' : sendCooldown ? 'Wait 2s...' : 'Send Call'}
+              </button>
+            </div>
+          </div>
 
-          <button className="primary" onClick={handleSubmitExchange}>
-            {phase === 'call' ? 'Reply' : 'Submit Exchange'}
+          <div className="status-row">
+            <strong>Status:</strong> {status}
+          </div>
+
+          <button className="primary" onClick={handlePlayResponse}>
+            Listen for their report
+          </button>
+        </section>
+      )}
+
+      {phase === 'response' && (
+        <section className="panel practice-panel">
+          <div className="call-header">
+            <div>
+              <p className="eyebrow">Receiving report</p>
+              <h2>Listening...</h2>
+            </div>
+            <div className="button-stack">
+              <button onClick={handlePlayResponse} disabled={isPlaying || sendCooldown}>
+                {isPlaying ? 'Sending...' : sendCooldown ? 'Wait 2s...' : 'Replay Report'}
+              </button>
+            </div>
+          </div>
+
+          <div className="status-row">
+            <strong>Status:</strong> {status}
+          </div>
+
+          <div className="exchange-form">
+            <label>
+              <span>RST Report (e.g., 599)</span>
+              <input
+                value={rstReport}
+                onChange={(event) => setRstReport(event.target.value.toUpperCase().slice(0, 3))}
+                placeholder="599"
+                maxLength={3}
+              />
+            </label>
+
+            <label>
+              <span>State / Province</span>
+              <input
+                value={currentState}
+                onChange={(event) => setCurrentState(event.target.value.toUpperCase())}
+                placeholder="CO"
+              />
+            </label>
+          </div>
+
+          <button className="primary" onClick={handleCompleteExchange}>
+            Complete Exchange
           </button>
         </section>
       )}

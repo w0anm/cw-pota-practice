@@ -39,39 +39,32 @@ export const playMorseAudio = (
   }
 
   const audioContext = new AudioCtor();
-  const dotDuration = dotDurationForWpm(settings.wpm) / 1000; // convert to seconds for Web Audio API
+  const dotDurationMs = dotDurationForWpm(settings.wpm);
+  const dotDuration = dotDurationMs / 1000; // convert to seconds for Web Audio API
   const dashDuration = dotDuration * 3;
 
   // Farnsworth spacing: increase gaps between letters/words while keeping dot/dash ratio
   const symbolGap = settings.farnsworth ? dotDuration * 3 : dotDuration;
-  const letterGap = settings.farnsworth ? dotDuration * 7 : dotDuration * 3;
-  const wordGap = settings.farnsworth ? dotDuration * 14 : dotDuration * 7;
+  const wordGap = settings.farnsworth ? dotDuration * 7 : dotDuration * 7;
 
   const pattern = getMorseForText(text).split('');
-  let index = 0;
   let audioTime = audioContext.currentTime;
+  const oscillators: OscillatorNode[] = [];
 
-  const scheduleSymbol = () => {
-    if (index >= pattern.length) {
-      audioContext.close();
-      onComplete?.();
-      return;
-    }
-
-    const char = pattern[index];
+  // Pre-schedule all symbols
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
 
     if (char === ' ') {
+      // Space between symbols (dot/dash)
       audioTime += symbolGap;
-      index += 1;
-      scheduleSymbol();
-      return;
+      continue;
     }
 
     if (char === '/') {
+      // Word gap
       audioTime += wordGap;
-      index += 1;
-      scheduleSymbol();
-      return;
+      continue;
     }
 
     const isDot = char === '.';
@@ -84,23 +77,27 @@ export const playMorseAudio = (
     oscillator.frequency.value = settings.frequency;
 
     // Smooth envelope to prevent clicking
-    const rampTime = 0.005; // 5ms rise/fall time
+    const rampTime = 0.003; // 3ms rise/fall time
     gainNode.gain.setValueAtTime(0, audioTime);
-    gainNode.gain.linearRampToValueAtTime(0.1, audioTime + rampTime);
-    gainNode.gain.setValueAtTime(0.1, audioTime + duration - rampTime);
+    gainNode.gain.linearRampToValueAtTime(0.15, audioTime + rampTime);
+    gainNode.gain.setValueAtTime(0.15, audioTime + duration - rampTime);
     gainNode.gain.linearRampToValueAtTime(0, audioTime + duration);
 
     oscillator.connect(gainNode);
     gainNode.connect(audioContext.destination);
     oscillator.start(audioTime);
     oscillator.stop(audioTime + duration);
+    oscillators.push(oscillator);
 
     audioTime += duration + symbolGap;
-    index += 1;
-    scheduleSymbol();
-  };
+  }
 
-  scheduleSymbol();
+  // Close context after all audio is done
+  const totalDuration = audioTime - audioContext.currentTime;
+  setTimeout(() => {
+    audioContext.close();
+    onComplete?.();
+  }, totalDuration * 1000 + 100);
 
   return () => {
     try {

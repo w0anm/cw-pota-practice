@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { playMorseAudio, type MorseSettings } from '@/lib/cw';
 import { callDatabase, type CallRecord } from '@/lib/callDatabase';
 import { createQSO, downloadCSV, exportQSOsToCSV, type QSO } from '@/lib/simulator';
+import '../simulator.css';
 
 const initialSettings: MorseSettings = {
   wpm: 18,
@@ -17,7 +18,7 @@ function getRandomCall(): CallRecord {
 
 const randomState = () => {
   const states = [
-    'CA', 'CO', 'WA', 'TX', 'NY', 'FL', 'AZ', 'OR', 'PA', 'NC', 'TN', 'OH', 'WA', 'MI', 'MN', 'UT', 'NM', 'ID', 'GA', 'AL'
+    'CA', 'CO', 'WA', 'TX', 'NY', 'FL', 'AZ', 'OR', 'PA', 'NC', 'TN', 'OH', 'MI', 'MN', 'UT', 'NM', 'ID', 'GA', 'AL', 'VA'
   ];
   return states[Math.floor(Math.random() * states.length)];
 };
@@ -34,7 +35,6 @@ export default function SimulatorPage() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [sendCooldown, setSendCooldown] = useState(false);
   const [phase, setPhase] = useState<'setup' | 'call' | 'report' | 'summary'>('setup');
-  const [sessionComplete, setSessionComplete] = useState(false);
   const playbackRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -43,14 +43,17 @@ export default function SimulatorPage() {
     };
   }, []);
 
+  const resetExchangeState = () => {
+    setRstReport('');
+    setCurrentState(randomState());
+  };
+
   const startSession = () => {
     const nextCall = getRandomCall();
     setStationCall(nextCall.callsign);
-    setCurrentState(randomState());
-    setRstReport('');
-    setStatus('Station is calling...');
+    resetExchangeState();
+    setStatus('Unknown station calling...');
     setSessionStarted(true);
-    setSessionComplete(false);
     setPhase('call');
     setQsos([]);
     playCurrentStationCall(nextCall.callsign);
@@ -78,17 +81,17 @@ export default function SimulatorPage() {
     if (!stationCall) return;
 
     if (phase === 'call') {
-      setStatus('Send your RST and state');
+      setStatus('Ready for your report and state');
       setPhase('report');
       setRstReport('');
       return;
     }
 
     if (phase === 'report') {
-      // Parse RST from combined string (e.g., "599" -> R=5, S=9, T=9)
-      const r = rstReport.charAt(0);
-      const s = rstReport.charAt(1);
-      const t = rstReport.charAt(2);
+      const digits = rstReport.trim().replace(/[^0-9]/g, '');
+      const r = digits.charAt(0) || '0';
+      const s = digits.charAt(1) || '0';
+      const t = digits.charAt(2) || '0';
 
       const qso = createQSO(
         stationCall,
@@ -102,21 +105,22 @@ export default function SimulatorPage() {
       setQsos((current) => [...current, qso]);
 
       if (qso.valid) {
-        setStatus(`QSO logged: ${qso.stationCall} - ${qso.state}`);
+        setStatus(`QSO logged successfully for ${qso.state}. Next station ready.`);
       } else {
-        setStatus(qso.error || 'QSO failed. Check your report and state.');
+        setStatus(qso.error || 'Invalid QSO. Check your RST and state and try again.');
       }
 
       if (qsos.length >= 9) {
-        setSessionComplete(true);
         setPhase('summary');
-      } else {
-        const next = getRandomCall();
-        setStationCall(next.callsign);
-        setCurrentState(randomState());
-        setRstReport('');
-        setPhase('call');
+        setSessionStarted(false);
+        return;
       }
+
+      const next = getRandomCall();
+      setStationCall(next.callsign);
+      resetExchangeState();
+      setPhase('call');
+      playCurrentStationCall(next.callsign);
     }
   };
 
@@ -129,6 +133,8 @@ export default function SimulatorPage() {
     downloadCSV(csv, 'pota-qsos.csv');
   };
 
+  const successfulQsos = qsos.filter((qso) => qso.valid).length;
+
   return (
     <main className="page-shell">
       <section className="panel hero-panel">
@@ -138,7 +144,7 @@ export default function SimulatorPage() {
         </div>
       </section>
 
-      {!sessionStarted && phase === 'setup' && (
+      {phase === 'setup' && (
         <section className="panel">
           <div className="settings-grid">
             <label>
@@ -177,12 +183,12 @@ export default function SimulatorPage() {
         </section>
       )}
 
-      {sessionStarted && phase !== 'summary' && (
+      {phase !== 'setup' && phase !== 'summary' && (
         <section className="panel practice-panel">
           <div className="call-header">
             <div>
               <p className="eyebrow">Unknown station</p>
-              <h2>---</h2>
+              <h2>Unknown station</h2>
             </div>
             <div className="button-stack">
               <button onClick={() => playCurrentStationCall(stationCall)} disabled={isPlaying || sendCooldown}>
@@ -201,7 +207,7 @@ export default function SimulatorPage() {
                 <span>RST Report (e.g., 599)</span>
                 <input
                   value={rstReport}
-                  onChange={(event) => setRstReport(event.target.value)}
+                  onChange={(event) => setRstReport(event.target.value.toUpperCase().slice(0, 3))}
                   placeholder="599"
                   maxLength={3}
                 />
@@ -227,9 +233,20 @@ export default function SimulatorPage() {
       {phase === 'summary' && (
         <section className="panel">
           <h2>Session Summary</h2>
-          <p>Total QSOs: {qsos.length}</p>
-          <p>Successful QSOs: {qsos.filter((qso) => qso.valid).length}</p>
-          <p>Failed QSOs: {qsos.filter((qso) => !qso.valid).length}</p>
+          <div className="summary-grid">
+            <div className="summary-stat">
+              <span>Total QSOs</span>
+              <strong>{qsos.length}</strong>
+            </div>
+            <div className="summary-stat success">
+              <span>Successful</span>
+              <strong>{successfulQsos}</strong>
+            </div>
+            <div className="summary-stat warning">
+              <span>Failed</span>
+              <strong>{qsos.length - successfulQsos}</strong>
+            </div>
+          </div>
 
           <div className="qso-table">
             <div className="qso-header">
@@ -256,6 +273,7 @@ export default function SimulatorPage() {
               setPhase('setup');
               setSessionStarted(false);
               setQsos([]);
+              setStatus('Ready for the next QSO');
             }}>New Session</button>
           </div>
         </section>

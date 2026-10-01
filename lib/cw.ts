@@ -43,9 +43,14 @@ export const playMorseAudio = (
   const dotDuration = dotDurationMs / 1000; // convert to seconds for Web Audio API
   const dashDuration = dotDuration * 3;
 
-  // Farnsworth spacing: increase gaps between letters/words while keeping dot/dash ratio
-  const symbolGap = settings.farnsworth ? dotDuration * 3 : dotDuration;
-  const wordGap = settings.farnsworth ? dotDuration * 7 : dotDuration * 7;
+  // Standard CW timing:
+  // - Space between dot/dash within a letter: 1 dot
+  // - Space between letters: 3 dots
+  // - Space between words: 7 dots
+  // Farnsworth spacing increases letter/word gaps while keeping dot/dash timing
+  const symbolGap = dotDuration; // space between dot/dash within a letter (always 1 dot)
+  const letterGap = settings.farnsworth ? dotDuration * 7 : dotDuration * 3; // space between letters
+  const wordGap = settings.farnsworth ? dotDuration * 14 : dotDuration * 7; // space between words
 
   const pattern = getMorseForText(text).split('');
   let audioTime = audioContext.currentTime;
@@ -56,13 +61,13 @@ export const playMorseAudio = (
     const char = pattern[i];
 
     if (char === ' ') {
-      // Space between symbols (dot/dash)
+      // Space between symbols (dot/dash) within a letter
       audioTime += symbolGap;
       continue;
     }
 
     if (char === '/') {
-      // Word gap
+      // Word gap (includes the letter gap, so subtract one letter gap)
       audioTime += wordGap;
       continue;
     }
@@ -89,7 +94,18 @@ export const playMorseAudio = (
     oscillator.stop(audioTime + duration);
     oscillators.push(oscillator);
 
-    audioTime += duration + symbolGap;
+    // Check if next character is space (letter gap) or / (word gap) or end
+    const nextChar = pattern[i + 1];
+    if (nextChar === ' ') {
+      audioTime += duration + symbolGap;
+    } else if (nextChar === '/') {
+      audioTime += duration + letterGap;
+    } else if (i === pattern.length - 1) {
+      audioTime += duration;
+    } else {
+      // Next is a dot/dash, add letter gap
+      audioTime += duration + letterGap;
+    }
   }
 
   // Close context after all audio is done

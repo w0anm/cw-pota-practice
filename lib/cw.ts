@@ -2,6 +2,8 @@ export type MorseSettings = {
   wpm: number;
   farnsworth: boolean;
   frequency: number;
+  tailSilenceMode: 'fixed' | 'wpm-based' | 'character-based';
+  fixedSilenceMs: number;
 };
 
 const MORSE: Record<string, string> = {
@@ -24,9 +26,34 @@ const getMorseLetters = (text: string): string[] =>
     .map((char) => (char === ' ' ? '/' : MORSE[char] ?? ''));
 
 /**
+ * Calculate tail silence in milliseconds based on settings
+ */
+const calculateTailSilence = (
+  text: string,
+  wpm: number,
+  mode: 'fixed' | 'wpm-based' | 'character-based',
+  fixedSilenceMs: number
+): number => {
+  const dotDurationMs = 1200 / wpm;
+
+  switch (mode) {
+    case 'fixed':
+      return fixedSilenceMs;
+    case 'wpm-based':
+      // 5 times the dot duration for the given WPM
+      return Math.round(dotDurationMs * 5);
+    case 'character-based':
+      // 3 dots per character average, so tail = 1 character duration
+      return Math.round(dotDurationMs * 9); // 3 symbols * 3 dots each
+    default:
+      return fixedSilenceMs;
+  }
+};
+
+/**
  * Play Morse code audio for the given text
  * @param text - Text to encode and play
- * @param settings - WPM, Farnsworth mode, and frequency settings
+ * @param settings - WPM, Farnsworth mode, frequency, and tail silence settings
  * @param onComplete - Callback when playback finishes
  * @returns Function to stop/cancel playback
  */
@@ -112,13 +139,21 @@ export const playMorseAudio = (
     }
   }
 
-  // Schedule context close and completion callback with 1-second tail to prevent clipping
-  const totalDuration = audioTime - audioContext.currentTime;
-  const tailTime = 1000; // 1 second tail to prevent last character clipping
+  // Calculate tail silence based on selected mode
+  const tailSilenceMs = calculateTailSilence(
+    text,
+    settings.wpm,
+    settings.tailSilenceMode,
+    settings.fixedSilenceMs
+  );
+  const tailSilenceSec = tailSilenceMs / 1000;
+
+  // Schedule context close and completion callback with configurable tail
+  const totalDuration = audioTime - audioContext.currentTime + tailSilenceSec;
   const timeoutId = setTimeout(() => {
     audioContext.close();
     onComplete?.();
-  }, totalDuration * 1000 + tailTime);
+  }, totalDuration * 1000);
 
   // Return cancellation function
   return () => {

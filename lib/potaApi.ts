@@ -31,11 +31,13 @@ const getThirtyDaysAgoDate = (): string => {
 
 /**
  * Fetch activations from POTA API for the last 30 days
+ * Uses the /activations endpoint which returns completed activations
  */
 const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
   try {
     const fromDate = getThirtyDaysAgoDate();
-    const url = `${POTA_API_BASE}/activations?activatedFrom=${fromDate}`;
+    // Use the summaries endpoint which returns actual completed activations
+    const url = `${POTA_API_BASE}/activations/summaries?activatedFrom=${fromDate}`;
     
     console.log('Fetching POTA activations from:', url);
     
@@ -59,23 +61,26 @@ const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
       console.log(`Processing ${data.length} activations from POTA API`);
       
       data.forEach((activation: any) => {
-        // POTA API uses 'userCallsign' for the activator's call
-        const callsign = (activation.userCallsign || activation.callsign)?.toUpperCase();
-        // POTA API uses 'reference' for park code (e.g., K-1234)
-        const parkCode = activation.reference || activation.parkCode || 'UNKNOWN';
-        // Park name might be under different keys
-        const parkName = activation.parkName || activation.park || 'Unknown Park';
+        // The API returns 'activator' field for callsign in summaries endpoint
+        const callsign = activation.activator?.toUpperCase();
+        // Park code is under 'reference'
+        const parkCode = activation.reference || 'UNKNOWN';
+        // Park name is under 'name'
+        const parkName = activation.name || 'Unknown Park';
+        // QSO count from the summaries
         const qsoCount = activation.qsoCount || activation.qualifyingCount || 0;
+        // Activity date
+        const date = activation.activationDate || activation.startDate || new Date().toISOString();
 
         if (callsign && !activationMap.has(callsign)) {
           activationMap.set(callsign, {
             callsign,
             parkCode,
             parkName,
-            date: activation.activatedDate || new Date().toISOString(),
+            date,
             qsoCount,
           });
-          console.log(`Added: ${callsign} from ${parkCode} (${parkName})`);
+          console.log(`Added: ${callsign} from ${parkCode} (${parkName}) - ${qsoCount} QSOs`);
         }
       });
     } else {

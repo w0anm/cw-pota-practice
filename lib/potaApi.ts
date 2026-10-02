@@ -1,6 +1,7 @@
 /**
  * POTA API integration for fetching real activator callsigns
  * Caches results locally with 24-hour expiration
+ * Uses server-side proxy to avoid CORS restrictions
  */
 
 export type POTAActivation = {
@@ -16,7 +17,6 @@ export type CachedPOTAData = {
   timestamp: number;
 };
 
-const POTA_API_BASE = 'https://api.pota.app/v1';
 const CACHE_KEY = 'pota_activations_cache';
 const CACHE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -30,16 +30,14 @@ const getThirtyDaysAgoDate = (): string => {
 };
 
 /**
- * Fetch activations from POTA API for the last 30 days
- * Uses the /activations endpoint which returns completed activations
+ * Fetch activations from POTA API via server proxy for the last 30 days
  */
 const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
   try {
     const fromDate = getThirtyDaysAgoDate();
-    // Use the summaries endpoint which returns actual completed activations
-    const url = `${POTA_API_BASE}/activations/summaries?activatedFrom=${fromDate}`;
+    const url = `/api/pota?activatedFrom=${encodeURIComponent(fromDate)}`;
     
-    console.log('Fetching POTA activations from:', url);
+    console.log('Fetching POTA activations from proxy:', url);
     
     const response = await fetch(url, {
       headers: { 'Accept': 'application/json' },
@@ -47,7 +45,7 @@ const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
     });
 
     if (!response.ok) {
-      console.error(`POTA API error: ${response.status}`);
+      console.error(`POTA proxy error: ${response.status}`);
       return [];
     }
 
@@ -61,23 +59,20 @@ const fetchActivationsFromPOTA = async (): Promise<POTAActivation[]> => {
       console.log(`Processing ${data.length} activations from POTA API`);
       
       data.forEach((activation: any) => {
-        // The API returns 'activator' field for callsign in summaries endpoint
-        const callsign = activation.activator?.toUpperCase();
-        // Park code is under 'reference'
-        const parkCode = activation.reference || 'UNKNOWN';
-        // Park name is under 'name'
-        const parkName = activation.name || 'Unknown Park';
-        // QSO count from the summaries
+        // POTA API uses 'activator' field for the activator's call
+        const callsign = (activation.activator || activation.userCallsign || activation.callsign)?.toUpperCase();
+        // POTA API uses 'reference' for park code (e.g., K-1234, US-3812)
+        const parkCode = activation.reference || activation.parkCode || 'UNKNOWN';
+        // Park name
+        const parkName = activation.name || activation.parkName || 'Unknown Park';
         const qsoCount = activation.qsoCount || activation.qualifyingCount || 0;
-        // Activity date
-        const date = activation.activationDate || activation.startDate || new Date().toISOString();
 
         if (callsign && !activationMap.has(callsign)) {
           activationMap.set(callsign, {
             callsign,
             parkCode,
             parkName,
-            date,
+            date: activation.activationDate || activation.startDate || new Date().toISOString(),
             qsoCount,
           });
           console.log(`Added: ${callsign} from ${parkCode} (${parkName}) - ${qsoCount} QSOs`);

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { playMorseAudio, type MorseSettings } from '@/lib/cw';
-import { callDatabase, type CallRecord } from '@/lib/callDatabase';
+import { loadCallDatabase, getCallDatabase, type CallRecord } from '@/lib/callDatabase';
 import { createQSO, downloadCSV, exportQSOsToCSV, type QSO } from '@/lib/simulator';
 import '../simulator.css';
 
@@ -12,8 +12,10 @@ const initialSettings: MorseSettings = {
   frequency: 700,
 };
 
-function getRandomCall(): CallRecord {
-  return callDatabase[Math.floor(Math.random() * callDatabase.length)];
+function getRandomCall(): CallRecord | null {
+  const db = getCallDatabase();
+  if (db.length === 0) return null;
+  return db[Math.floor(Math.random() * db.length)];
 }
 
 const randomState = () => {
@@ -35,6 +37,7 @@ export default function SimulatorPage() {
   const [qsos, setQsos] = useState<QSO[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [sendCooldown, setSendCooldown] = useState(false);
+  const [isLoadingCalls, setIsLoadingCalls] = useState(false);
   const [phase, setPhase] = useState<'setup' | 'call' | 'yourcall' | 'yourreport' | 'response' | 'summary'>('setup');
   const playbackRef = useRef<(() => void) | null>(null);
 
@@ -50,8 +53,21 @@ export default function SimulatorPage() {
     setCurrentState(randomState());
   };
 
-  const startSession = () => {
+  const startSession = async () => {
+    // Load calls from the source selected on the practice page (POTA API or custom file)
+    setIsLoadingCalls(true);
+    setStatus('Loading callsigns...');
+    const db = await loadCallDatabase();
+    setIsLoadingCalls(false);
+
+    if (db.length === 0) {
+      setStatus('No callsigns available. Choose POTA or upload a custom file on the practice page, then try again.');
+      return;
+    }
+
     const nextCall = getRandomCall();
+    if (!nextCall) return;
+
     setStationCall(nextCall.callsign);
     resetExchangeState();
     setStatus('Listening to station call...');
@@ -167,13 +183,14 @@ export default function SimulatorPage() {
       setStatus(qso.error || 'Invalid QSO. Check your RST and state.');
     }
 
-    if (qsos.length >= 9) {
+    const next = getRandomCall();
+
+    if (qsos.length >= 9 || !next) {
       setPhase('summary');
       setSessionStarted(false);
       return;
     }
 
-    const next = getRandomCall();
     setStationCall(next.callsign);
     resetExchangeState();
     setPhase('call');
@@ -235,7 +252,13 @@ export default function SimulatorPage() {
             </label>
           </div>
 
-          <button className="primary" onClick={startSession}>Start Session</button>
+          <button className="primary" onClick={startSession} disabled={isLoadingCalls}>
+            {isLoadingCalls ? 'Loading...' : 'Start Session'}
+          </button>
+
+          <div className="status-row">
+            <strong>Status:</strong> {status}
+          </div>
         </section>
       )}
 

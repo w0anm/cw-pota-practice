@@ -1,20 +1,15 @@
 import { NextResponse } from 'next/server';
 
-const POTA_API_BASE = 'https://api.pota.app/v1';
+export const dynamic = 'force-dynamic';
 
-export async function GET(request: Request) {
-  const { searchParams } = new URL(request.url);
-  const fromDate =
-    searchParams.get('activatedFrom') ??
-    new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+// Live activator spots (callsign, park reference, park name, mode, frequency)
+const POTA_SPOTS_URL = 'https://api.pota.app/spot/activator';
 
-  const upstreamUrl = `${POTA_API_BASE}/activations/summaries?activatedFrom=${encodeURIComponent(fromDate)}`;
-
+export async function GET() {
   try {
-    const response = await fetch(upstreamUrl, {
-      headers: {
-        Accept: 'application/json',
-      },
+    const response = await fetch(POTA_SPOTS_URL, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
     });
 
     if (!response.ok) {
@@ -25,12 +20,15 @@ export async function GET(request: Request) {
     }
 
     const data = await response.json();
-    return NextResponse.json(data);
+    if (!Array.isArray(data)) {
+      return NextResponse.json([]);
+    }
+
+    // Prefer CW spots since this is a CW practice app; fall back to all spots.
+    const cw = data.filter((s: any) => String(s.mode ?? '').toUpperCase() === 'CW');
+    return NextResponse.json(cw.length > 0 ? cw : data);
   } catch (error) {
     console.error('Failed to proxy POTA API:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch POTA data' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to fetch POTA data' }, { status: 500 });
   }
 }

@@ -1,8 +1,18 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { playMorseAudio, type MorseSettings } from '@/lib/cw';
-import { loadPOTACallDatabase, getCallDatabase, type CallRecord } from '@/lib/callDatabase';
+import {
+  loadCallDatabase,
+  getCallDatabase,
+  getSource,
+  setSource,
+  parseCallsignText,
+  saveCustomCalls,
+  getCustomCalls,
+  type CallRecord,
+  type CallSource,
+} from '@/lib/callDatabase';
 
 const initialSettings: MorseSettings = {
   wpm: 18,
@@ -12,16 +22,24 @@ const initialSettings: MorseSettings = {
   fixedSilenceMs: 1000,
 };
 
-function getRandomCall() {
-  const db = getCallDatabase();
-  return db[Math.floor(Math.random() * db.length)];
+function pickRandom(db: CallRecord[], avoid?: string): CallRecord | null {
+  if (db.length === 0) return null;
+  if (db.length === 1) return db[0];
+  let next = db[Math.floor(Math.random() * db.length)];
+  let guard = 0;
+  while (next.callsign === avoid && guard++ < 10) {
+    next = db[Math.floor(Math.random() * db.length)];
+  }
+  return next;
 }
 
 export default function HomePage() {
   const [settings, setSettings] = useState<MorseSettings>(initialSettings);
-  const [currentCall, setCurrentCall] = useState<CallRecord>(getRandomCall());
+  const [source, setSourceState] = useState<CallSource>('pota');
+  const [calls, setCalls] = useState<CallRecord[]>([]);
+  const [currentCall, setCurrentCall] = useState<CallRecord | null>(null);
   const [userInput, setUserInput] = useState('');
-  const [status, setStatus] = useState('Ready for the next call');
+  const [status, setStatus] = useState('Loading calls...');
   const [firstTimeCorrect, setFirstTimeCorrect] = useState(0);
   const [repeats, setRepeats] = useState(0);
   const [attempts, setAttempts] = useState(0);
@@ -34,155 +52,159 @@ export default function HomePage() {
   const [lastRefreshTime, setLastRefreshTime] = useState<string | null>(null);
   const playbackRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
-    return () => {
-      if (playbackRef.current) {
-        playbackRef.current();
-      }
-    };
-  }, []);
-
-  // Load POTA data on mount
-  useEffect(() => {
-    const initializePOTA = async () => {
-      await loadPOTACallDatabase();
-      // Refresh the current call to potentially use POTA data
-      setCurrentCall(getRandomCall());
-      setLastRefreshTime(new Date().toLocaleTimeString());
-    };
-    initializePOTA();
-  }, []);
-
-  useEffect(() => {
-    // Auto-play the new call after it has been selected.
-    if (currentCall) {
-      setIsPlaying(true);
-      setStatus('Sending...');
-      setSendCooldown(true);
-      const stop = playMorseAudio(currentCall.callsign, settings, () => {
-        setIsPlaying(false);
-        setStatus('Ready to copy');
-      });
-      playbackRef.current = stop;
-
-      const cooldownTimer = window.setTimeout(() => {
-        setSendCooldown(false);
-      }, 2000);
-
-      return () => window.clearTimeout(cooldownTimer);
-    }
-  }, [currentCall, settings]);
-
-  const callListText = useMemo(
-    () => getCallDatabase().map((item) => item.callsign).join(', '),
-    []
-  );
-
-  const handleRefreshPOTA = async () => {
-    setIsRefreshing(true);
-    setStatus('Refreshing POTA data...');
-    try {
-      await loadPOTACallDatabase(true); // Force refresh
-      setCurrentCall(getRandomCall());
-      setStatus('POTA data refreshed');
-      setLastRefreshTime(new Date().toLocaleTimeString());
-      setTimeout(() => {
-        setStatus('Ready to copy');
-      }, 1500);
-    } catch (error) {
-      setStatus('Failed to refresh POTA data');
-      console.error(error);
-    } finally {
-      setIsRefreshing(false);
+  const applyDatabase = (db: CallRecord[], src: CallSource) => {
+    setCalls(db);
+    setCurrentCall(pickRandom(db));
+    setUserInput('');
+    setLastResult(null);
+    setCallAttempts(0);
+    setLastRefreshTime(new Date().toLocaleTimeString());
+    if (db.length === 0) {
+      setStatus(
+        src === 'custom'
+          ? 'No custom calls loaded. Upload a file with one callsign per line.'
+          : 'No POTA callsigns returned. Try Refresh, or switch to a custom file.'
+      );
+    } else {
+      setStatus(`Loaded ${db.length} calls. Press Play call.`);
     }
   };
 
-  const playCurrentCall = () => {
-    if (isPlaying || sendCooldown) return;
+  const reload = async (src: CallSource, force = false) => {
+    setIsRefreshing(true);
+    setStatus(src === 'pota' ? 'Fetching POTA callsigns...' : 'Loading custom calls...');
+    const db = await loadCallDatabase(force);
+    applyDatabase(db, src);
+    setIsRefreshing(false);
+  };
 
+  // Initial load
+  useEffect(() => {
+    const src = getSource();
+    setSourceState(src);
+    reload(src);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (playbackRef.current) playbackRef.current();
+    };
+  }, []);
+
+  // Auto-play when a new call is selected
+  useEffect(() => {
+    if (!currentCall) return;
     setIsPlaying(true);
     setStatus('Sending...');
     setSendCooldown(true);
-
     const stop = playMorseAudio(currentCall.callsign, settings, () => {
       setIsPlaying(false);
       setStatus('Ready to copy');
-      setSendCooldown(false);
     });
-
     playbackRef.current = stop;
 
-    window.setTimeout(() => {
-      setSendCooldown(false);
-    }, 2000);
+    const cooldownTimer = window.setTimeout(() => setSendCooldown(false), 2000);
+    return () => window.clearTimeout(cooldownTimer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentCall]);
+
+  const handleSourceChange = async (next: CallSource) => {
+    setSource(next);
+    setSourceState(next);
+    await reload(next);
   };
 
-  const handleNextCall = () => {
-    if (callAttempts > 0 && lastResult !== 'correct') {
-      setMissedCall(currentCall.callsign);
-    }
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const parsed = parseCallsignText(String(e.target?.result ?? ''));
+      if (parsed.length === 0) {
+        setStatus('No valid callsigns found in that file (expected one per line).');
+        return;
+      }
+      saveCustomCalls(parsed);
+      setSource('custom');
+      setSourceState('custom');
+      await reload('custom');
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  };
 
-    const next = getRandomCall();
-    setCurrentCall(next);
+  const handleRefresh = () => reload(source, true);
+
+  const nextCall = () => {
+    setCurrentCall(pickRandom(getCallDatabase(), currentCall?.callsign));
     setUserInput('');
     setLastResult(null);
     setCallAttempts(0);
     setStatus('New call ready. Press Play call.');
   };
 
+  const playCurrentCall = () => {
+    if (!currentCall || isPlaying || sendCooldown) return;
+    setIsPlaying(true);
+    setStatus('Sending...');
+    setSendCooldown(true);
+    playbackRef.current = playMorseAudio(currentCall.callsign, settings, () => {
+      setIsPlaying(false);
+      setStatus('Ready to copy');
+      setSendCooldown(false);
+    });
+    window.setTimeout(() => setSendCooldown(false), 2000);
+  };
+
+  const handleNextCall = () => {
+    if (currentCall && callAttempts > 0 && lastResult !== 'correct') {
+      setMissedCall(currentCall.callsign);
+    }
+    nextCall();
+  };
+
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
-    const normalizedValue = userInput.trim().toUpperCase();
-    const expectedValue = currentCall.callsign.toUpperCase();
+    if (!currentCall) return;
+    const normalized = userInput.trim().toUpperCase();
+    const expected = currentCall.callsign.toUpperCase();
 
-    const newCallAttempts = callAttempts + 1;
-    setCallAttempts(newCallAttempts);
-    setAttempts((current) => current + 1);
+    const newAttempts = callAttempts + 1;
+    setCallAttempts(newAttempts);
+    setAttempts((c) => c + 1);
 
-    if (normalizedValue === expectedValue) {
-      setFirstTimeCorrect((count) => count + 1);
+    if (normalized === expected) {
+      if (newAttempts === 1) setFirstTimeCorrect((c) => c + 1);
       setLastResult('correct');
-      setStatus(`Correct copy: ${expectedValue}`);
+      setStatus(`Correct copy: ${expected}`);
       setMissedCall(null);
-      setTimeout(() => {
-        const next = getRandomCall();
-        setCurrentCall(next);
-        setUserInput('');
-        setLastResult(null);
-        setCallAttempts(0);
-        setStatus('New call ready. Press Play call.');
-      }, 800);
+      setTimeout(nextCall, 800);
       return;
     }
 
-    if (newCallAttempts < 3) {
+    setRepeats((c) => c + 1);
+    if (newAttempts < 3) {
       setLastResult('incorrect');
       setStatus('Not quite right');
-      setRepeats((count) => count + 1);
     } else {
       setLastResult('missed');
-      setStatus(`Missed Call: ${expectedValue}`);
-      setMissedCall(expectedValue);
-      setRepeats((count) => count + 1);
-      setTimeout(() => {
-        const next = getRandomCall();
-        setCurrentCall(next);
-        setUserInput('');
-        setLastResult(null);
-        setCallAttempts(0);
-        setStatus('New call ready. Press Play call.');
-      }, 1500);
+      setStatus(`Missed Call: ${expected}`);
+      setMissedCall(expected);
+      setTimeout(nextCall, 1500);
     }
   };
 
   const handleRepeat = () => {
-    setRepeats((count) => count + 1);
+    setRepeats((c) => c + 1);
     playCurrentCall();
   };
 
   const handleSettingsChange = (key: keyof MorseSettings, value: number | boolean | string) => {
     setSettings((current) => ({ ...current, [key]: value }));
   };
+
+  const customCount = typeof window !== 'undefined' ? getCustomCalls().length : 0;
 
   return (
     <main className="page-shell">
@@ -192,17 +214,47 @@ export default function HomePage() {
           <h1>CW Parks on the Air Practice</h1>
         </div>
         <div className="stats-row">
-          <div className="stat-box">
-            <span>First-time copies</span>
-            <strong>{firstTimeCorrect}</strong>
-          </div>
-          <div className="stat-box">
-            <span>Repeats</span>
-            <strong>{repeats}</strong>
-          </div>
-          <div className="stat-box">
-            <span>Attempts</span>
-            <strong>{attempts}</strong>
+          <div className="stat-box"><span>First-time copies</span><strong>{firstTimeCorrect}</strong></div>
+          <div className="stat-box"><span>Repeats</span><strong>{repeats}</strong></div>
+          <div className="stat-box"><span>Attempts</span><strong>{attempts}</strong></div>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h3>Callsign source</h3>
+        <div className="control-grid">
+          <label className="checkbox-row">
+            <input
+              type="radio"
+              name="source"
+              checked={source === 'pota'}
+              onChange={() => handleSourceChange('pota')}
+            />
+            <span>POTA API (live activators)</span>
+          </label>
+
+          <label className="checkbox-row">
+            <input
+              type="radio"
+              name="source"
+              checked={source === 'custom'}
+              onChange={() => handleSourceChange('custom')}
+            />
+            <span>My own file{customCount > 0 ? ` (${customCount} calls saved)` : ''}</span>
+          </label>
+
+          <label>
+            <span>Upload callsign file (one per line)</span>
+            <input type="file" accept=".txt,.csv" onChange={handleFileUpload} />
+          </label>
+
+          <div>
+            <button onClick={handleRefresh} disabled={isRefreshing} className="secondary">
+              {isRefreshing ? 'Loading...' : source === 'pota' ? 'Refresh POTA Data' : 'Reload file'}
+            </button>
+            {lastRefreshTime && (
+              <p style={{ fontSize: '0.85rem', marginTop: '0.5rem' }}>Last loaded: {lastRefreshTime}</p>
+            )}
           </div>
         </div>
       </section>
@@ -216,7 +268,7 @@ export default function HomePage() {
               min={5}
               max={30}
               value={settings.wpm}
-              onChange={(event) => handleSettingsChange('wpm', Number(event.target.value))}
+              onChange={(e) => handleSettingsChange('wpm', Number(e.target.value))}
             />
             <strong>{settings.wpm} WPM</strong>
           </label>
@@ -225,7 +277,7 @@ export default function HomePage() {
             <input
               type="checkbox"
               checked={settings.farnsworth}
-              onChange={(event) => handleSettingsChange('farnsworth', event.target.checked)}
+              onChange={(e) => handleSettingsChange('farnsworth', e.target.checked)}
             />
             <span>Use Farnsworth spacing</span>
           </label>
@@ -237,7 +289,7 @@ export default function HomePage() {
               min={400}
               max={1200}
               value={settings.frequency}
-              onChange={(event) => handleSettingsChange('frequency', Number(event.target.value))}
+              onChange={(e) => handleSettingsChange('frequency', Number(e.target.value))}
             />
           </label>
 
@@ -245,7 +297,7 @@ export default function HomePage() {
             <span>Tail silence mode</span>
             <select
               value={settings.tailSilenceMode}
-              onChange={(event) => handleSettingsChange('tailSilenceMode', event.target.value)}
+              onChange={(e) => handleSettingsChange('tailSilenceMode', e.target.value)}
             >
               <option value="fixed">Fixed (1s)</option>
               <option value="wpm-based">WPM-based</option>
@@ -262,25 +314,10 @@ export default function HomePage() {
                 max={2000}
                 step={100}
                 value={settings.fixedSilenceMs}
-                onChange={(event) => handleSettingsChange('fixedSilenceMs', Number(event.target.value))}
+                onChange={(e) => handleSettingsChange('fixedSilenceMs', Number(e.target.value))}
               />
             </label>
           )}
-
-          <div>
-            <button 
-              onClick={handleRefreshPOTA} 
-              disabled={isRefreshing}
-              className="secondary"
-            >
-              {isRefreshing ? 'Refreshing...' : 'Refresh POTA Data'}
-            </button>
-            {lastRefreshTime && (
-              <p style={{ fontSize: '0.85rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
-                Last refreshed: {lastRefreshTime}
-              </p>
-            )}
-          </div>
         </div>
       </section>
 
@@ -289,20 +326,20 @@ export default function HomePage() {
           <div>
             <p className="eyebrow">Call attempt {callAttempts}/3</p>
             <h2>Listen to the call</h2>
-            {currentCall.parkCode && (
-              <p style={{ fontSize: '0.95rem', color: 'var(--primary)', marginTop: '0.5rem' }}>
+            {currentCall?.parkCode && (
+              <p style={{ fontSize: '0.95rem', marginTop: '0.5rem' }}>
                 {currentCall.location} ({currentCall.parkCode})
               </p>
             )}
           </div>
           <div className="button-stack">
-            <button onClick={playCurrentCall} disabled={isPlaying || sendCooldown}>
+            <button onClick={playCurrentCall} disabled={!currentCall || isPlaying || sendCooldown}>
               {isPlaying ? 'Sending...' : sendCooldown ? 'Wait 2s...' : 'Play call'}
             </button>
-            <button className="secondary" onClick={handleRepeat} disabled={isPlaying || sendCooldown}>
+            <button className="secondary" onClick={handleRepeat} disabled={!currentCall || isPlaying || sendCooldown}>
               Repeat key
             </button>
-            <button className="secondary" onClick={handleNextCall}>
+            <button className="secondary" onClick={handleNextCall} disabled={!currentCall}>
               New call
             </button>
           </div>
@@ -313,17 +350,16 @@ export default function HomePage() {
             <span>Type the call you copied</span>
             <input
               value={userInput}
-              onChange={(event) => setUserInput(event.target.value.toUpperCase())}
+              onChange={(e) => setUserInput(e.target.value.toUpperCase())}
               placeholder="e.g. K1ABC"
               autoComplete="off"
+              disabled={!currentCall}
             />
           </label>
-          <button type="submit">Submit copy</button>
+          <button type="submit" disabled={!currentCall}>Submit copy</button>
         </form>
 
-        <div className={`status ${lastResult ?? ''}`}>
-          {status}
-        </div>
+        <div className={`status ${lastResult ?? ''}`}>{status}</div>
 
         {missedCall && (
           <div className="missed-call-section">
@@ -334,8 +370,8 @@ export default function HomePage() {
       </section>
 
       <section className="panel">
-        <h3>Practice call database</h3>
-        <p className="call-list">{callListText}</p>
+        <h3>Practice call list ({calls.length})</h3>
+        <p className="call-list">{calls.map((c) => c.callsign).join(', ')}</p>
       </section>
     </main>
   );

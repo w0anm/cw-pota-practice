@@ -2,9 +2,12 @@ export type MorseSettings = {
   wpm: number;
   farnsworth: boolean;
   frequency: number;
-  tailSilenceMode: 'fixed' | 'wpm-based' | 'character-based';
-  fixedSilenceMs: number;
+  tailSilenceMode?: 'fixed' | 'wpm-based' | 'character-based';
+  fixedSilenceMs?: number;
 };
+
+const DEFAULT_TAIL_MODE = 'fixed' as const;
+const DEFAULT_FIXED_SILENCE_MS = 1000;
 
 const MORSE: Record<string, string> = {
   A: '.-', B: '-...', C: '-.-.', D: '-..', E: '.', F: '..-.', G: '--.', H: '....', I: '..', J: '.---',
@@ -29,7 +32,6 @@ const getMorseLetters = (text: string): string[] =>
  * Calculate tail silence in milliseconds based on settings
  */
 const calculateTailSilence = (
-  text: string,
   wpm: number,
   mode: 'fixed' | 'wpm-based' | 'character-based',
   fixedSilenceMs: number
@@ -71,6 +73,12 @@ export const playMorseAudio = (
 
   const audioContext = new AudioCtor();
 
+  // Browsers may start the context suspended (e.g. when created after an async
+  // call, outside the click handler). Resume it so scheduled tones are audible.
+  if (audioContext.state === 'suspended') {
+    audioContext.resume().catch(() => undefined);
+  }
+
   // Calculate timing based on WPM (Paris standard: 1200ms / WPM = dot duration in ms)
   const dotDurationMs = 1200 / settings.wpm;
   const dotDuration = dotDurationMs / 1000; // Convert to seconds for Web Audio API
@@ -82,8 +90,9 @@ export const playMorseAudio = (
   const wordGap = settings.farnsworth ? dotDuration * 14 : dotDuration * 7; // Gap between words
 
   const morseLetters = getMorseLetters(text);
-  let audioTime = audioContext.currentTime;
-  const oscillators: OscillatorNode[] = [];
+  // Small lead-in so the first tone isn't clipped while the context spins up
+  let audioTime = audioContext.currentTime + 0.05;
+  const startTime = audioContext.currentTime;
 
   // Schedule all symbols
   for (let letterIdx = 0; letterIdx < morseLetters.length; letterIdx++) {
@@ -122,7 +131,6 @@ export const playMorseAudio = (
 
       oscillator.start(audioTime);
       oscillator.stop(audioTime + duration);
-      oscillators.push(oscillator);
 
       audioTime += duration;
 
@@ -139,19 +147,19 @@ export const playMorseAudio = (
     }
   }
 
-  // Calculate tail silence based on selected mode
+  // Calculate tail silence based on selected mode (with safe defaults so a
+  // missing setting can never produce NaN and close the audio context early)
   const tailSilenceMs = calculateTailSilence(
-    text,
     settings.wpm,
-    settings.tailSilenceMode,
-    settings.fixedSilenceMs
+    settings.tailSilenceMode ?? DEFAULT_TAIL_MODE,
+    settings.fixedSilenceMs ?? DEFAULT_FIXED_SILENCE_MS
   );
-  const tailSilenceSec = tailSilenceMs / 1000;
+  const tailSilenceSec = Number.isFinite(tailSilenceMs) ? tailSilenceMs / 1000 : DEFAULT_FIXED_SILENCE_MS / 1000;
 
   // Schedule context close and completion callback with configurable tail
-  const totalDuration = audioTime - audioContext.currentTime + tailSilenceSec;
+  const totalDuration = audioTime - startTime + tailSilenceSec;
   const timeoutId = setTimeout(() => {
-    audioContext.close();
+    audioContext.close().catch(() => undefined);
     onComplete?.();
   }, totalDuration * 1000);
 
@@ -159,7 +167,7 @@ export const playMorseAudio = (
   return () => {
     clearTimeout(timeoutId);
     try {
-      audioContext.close();
+      audioContext.close().catch(() => undefined);
     } catch (e) {
       // Context may already be closed
     }

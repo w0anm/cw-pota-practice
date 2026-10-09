@@ -323,9 +323,7 @@ export default function HomePage() {
     if (newAttempts < 3) {
       setLastResult('incorrect');
       setStatus('Not quite right');
-      // Clear the entry and give another 4s window (replays if nothing typed).
-      inputRef.current = '';
-      setUserInput('');
+      // Do NOT clear the input field
       if (sessionActive && phaseRef.current !== 'sending') {
         const runId = ++runRef.current;
         startListening(call, runId);

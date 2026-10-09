@@ -14,6 +14,10 @@ import {
   type CallSource,
 } from '@/lib/callDatabase';
 
+const START_DELAY_MS = 3000; // after pressing "Play call", wait before first send
+const LISTEN_WINDOW_MS = 4000; // time to start typing before the call is replayed
+const NEXT_CALL_DELAY_MS = 2000; // after a correct copy, wait before the next call
+
 const initialSettings: MorseSettings = {
   wpm: 18,
   farnsworth: true,
@@ -21,6 +25,8 @@ const initialSettings: MorseSettings = {
   tailSilenceMode: 'fixed',
   fixedSilenceMs: 1000,
 };
+
+type Phase = 'idle' | 'waiting' | 'sending' | 'listening' | 'resolved';
 
 function pickRandom(db: CallRecord[], avoid?: string): CallRecord | null {
   if (db.length === 0) return null;
@@ -45,19 +51,128 @@ export default function HomePage() {
   const [attempts, setAttempts] = useState(0);
   const [lastResult, setLastResult] = useState<'correct' | 'incorrect' | 'missed' | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [sessionActive, setSessionActive] = useState(false);
   const [callAttempts, setCallAttempts] = useState(0);
   const [missedCall, setMissedCall] = useState<string | null>(null);
-  const [sendCooldown, setSendCooldown] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastRefreshTime, setLastRefreshTime] = useState<string | null>(null);
-  const playbackRef = useRef<(() => void) | null>(null);
 
-  const applyDatabase = (db: CallRecord[], src: CallSource) => {
-    setCalls(db);
-    setCurrentCall(pickRandom(db));
+  const playbackRef = useRef<(() => void) | null>(null);
+  const timerRef = useRef<number | null>(null);
+  const runRef = useRef(0); // invalidates stale timers/callbacks
+  const phaseRef = useRef<Phase>('idle');
+  const inputRef = useRef('');
+  const callAttemptsRef = useRef(0);
+  const currentCallRef = useRef<CallRecord | null>(null);
+  const settingsRef = useRef<MorseSettings>(initialSettings);
+  settingsRef.current = settings;
+
+  const clearTimer = () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const stopAll = () => {
+    runRef.current += 1;
+    clearTimer();
+    if (playbackRef.current) {
+      playbackRef.current();
+      playbackRef.current = null;
+    }
+    phaseRef.current = 'idle';
+    setIsPlaying(false);
+    setSessionActive(false);
+  };
+
+  const resetEntry = () => {
+    inputRef.current = '';
+    callAttemptsRef.current = 0;
     setUserInput('');
     setLastResult(null);
     setCallAttempts(0);
+  };
+
+  /** Wait LISTEN_WINDOW_MS for input; replay the call if nothing was typed. */
+  const startListening = (call: CallRecord, runId: number) => {
+    phaseRef.current = 'listening';
+    setStatus('Listening... type the call (replays in 4s if nothing entered)');
+    clearTimer();
+    timerRef.current = window.setTimeout(() => {
+      if (runRef.current !== runId) return;
+      if (inputRef.current.trim() === '') {
+        setRepeats((c) => c + 1);
+        sendCall(call, runId);
+      }
+      // If something has been typed, wait for it to match or be submitted.
+    }, LISTEN_WINDOW_MS);
+  };
+
+  const sendCall = (call: CallRecord, runId: number) => {
+    phaseRef.current = 'sending';
+    setIsPlaying(true);
+    setStatus('Sending...');
+    playbackRef.current = playMorseAudio(call.callsign, settingsRef.current, () => {
+      if (runRef.current !== runId) return;
+      setIsPlaying(false);
+      startListening(call, runId);
+    });
+  };
+
+  const beginCall = (call: CallRecord, runId: number) => {
+    currentCallRef.current = call;
+    sendCall(call, runId);
+  };
+
+  /** Pick the next call and send it immediately (used after the 2s pause). */
+  const advance = (runId: number) => {
+    if (runRef.current !== runId) return;
+    const next = pickRandom(getCallDatabase(), currentCallRef.current?.callsign);
+    if (!next) {
+      stopAll();
+      setStatus('No calls available.');
+      return;
+    }
+    setCurrentCall(next);
+    resetEntry();
+    beginCall(next, runId);
+  };
+
+  const scheduleAdvance = () => {
+    clearTimer();
+    const runId = ++runRef.current;
+    timerRef.current = window.setTimeout(() => advance(runId), NEXT_CALL_DELAY_MS);
+  };
+
+  const resolveCorrect = (expected: string) => {
+    phaseRef.current = 'resolved';
+    clearTimer();
+    if (playbackRef.current) {
+      playbackRef.current();
+      playbackRef.current = null;
+    }
+    setIsPlaying(false);
+
+    const newAttempts = callAttemptsRef.current + 1;
+    callAttemptsRef.current = newAttempts;
+    setCallAttempts(newAttempts);
+    setAttempts((c) => c + 1);
+    if (newAttempts === 1) setFirstTimeCorrect((c) => c + 1);
+
+    setLastResult('correct');
+    setStatus(`Correct copy: ${expected}. Next call in 2s...`);
+    setMissedCall(null);
+    scheduleAdvance();
+  };
+
+  const applyDatabase = (db: CallRecord[], src: CallSource) => {
+    stopAll();
+    const first = pickRandom(db);
+    currentCallRef.current = first;
+    setCalls(db);
+    setCurrentCall(first);
+    resetEntry();
     setLastRefreshTime(new Date().toLocaleTimeString());
     if (db.length === 0) {
       setStatus(
@@ -86,28 +201,14 @@ export default function HomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
+      runRef.current += 1;
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
       if (playbackRef.current) playbackRef.current();
     };
   }, []);
-
-  // Auto-play when a new call is selected
-  useEffect(() => {
-    if (!currentCall) return;
-    setIsPlaying(true);
-    setStatus('Sending...');
-    setSendCooldown(true);
-    const stop = playMorseAudio(currentCall.callsign, settings, () => {
-      setIsPlaying(false);
-      setStatus('Ready to copy');
-    });
-    playbackRef.current = stop;
-
-    const cooldownTimer = window.setTimeout(() => setSendCooldown(false), 2000);
-    return () => window.clearTimeout(cooldownTimer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentCall]);
 
   const handleSourceChange = async (next: CallSource) => {
     setSource(next);
@@ -136,68 +237,111 @@ export default function HomePage() {
 
   const handleRefresh = () => reload(source, true);
 
-  const nextCall = () => {
-    setCurrentCall(pickRandom(getCallDatabase(), currentCall?.callsign));
-    setUserInput('');
-    setLastResult(null);
-    setCallAttempts(0);
-    setStatus('New call ready. Press Play call.');
+  /** "Play call": wait 3s, send, then listen for 4s (replaying if nothing typed). */
+  const handlePlayCall = () => {
+    const call = currentCallRef.current;
+    if (!call || sessionActive) return;
+
+    clearTimer();
+    const runId = ++runRef.current;
+    resetEntry();
+    setSessionActive(true);
+    phaseRef.current = 'waiting';
+    setStatus('Get ready... sending in 3s');
+    timerRef.current = window.setTimeout(() => {
+      if (runRef.current !== runId) return;
+      beginCall(call, runId);
+    }, START_DELAY_MS);
   };
 
-  const playCurrentCall = () => {
-    if (!currentCall || isPlaying || sendCooldown) return;
-    setIsPlaying(true);
-    setStatus('Sending...');
-    setSendCooldown(true);
-    playbackRef.current = playMorseAudio(currentCall.callsign, settings, () => {
-      setIsPlaying(false);
-      setStatus('Ready to copy');
-      setSendCooldown(false);
-    });
-    window.setTimeout(() => setSendCooldown(false), 2000);
+  const handleStop = () => {
+    stopAll();
+    setStatus('Stopped. Press Play call to continue.');
+  };
+
+  const handleRepeat = () => {
+    const call = currentCallRef.current;
+    if (!call) return;
+    clearTimer();
+    if (playbackRef.current) playbackRef.current();
+    const runId = ++runRef.current;
+    setSessionActive(true);
+    setRepeats((c) => c + 1);
+    sendCall(call, runId);
   };
 
   const handleNextCall = () => {
-    if (currentCall && callAttempts > 0 && lastResult !== 'correct') {
-      setMissedCall(currentCall.callsign);
+    const call = currentCallRef.current;
+    if (call && callAttemptsRef.current > 0 && lastResult !== 'correct') {
+      setMissedCall(call.callsign);
     }
-    nextCall();
+    stopAll();
+    const next = pickRandom(getCallDatabase(), call?.callsign);
+    currentCallRef.current = next;
+    setCurrentCall(next);
+    resetEntry();
+    setStatus('New call ready. Press Play call.');
+  };
+
+  const handleInputChange = (value: string) => {
+    const upper = value.toUpperCase();
+    setUserInput(upper);
+    inputRef.current = upper;
+
+    // Auto-accept as soon as the typed call matches while a call is active.
+    const call = currentCallRef.current;
+    if (
+      call &&
+      (phaseRef.current === 'sending' || phaseRef.current === 'listening') &&
+      upper.trim() === call.callsign.toUpperCase()
+    ) {
+      resolveCorrect(call.callsign.toUpperCase());
+    }
   };
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!currentCall) return;
-    const normalized = userInput.trim().toUpperCase();
-    const expected = currentCall.callsign.toUpperCase();
+    const call = currentCallRef.current;
+    if (!call) return;
+    if (phaseRef.current === 'resolved') return;
 
-    const newAttempts = callAttempts + 1;
-    setCallAttempts(newAttempts);
-    setAttempts((c) => c + 1);
+    const normalized = inputRef.current.trim().toUpperCase();
+    const expected = call.callsign.toUpperCase();
+    if (!normalized) return;
 
     if (normalized === expected) {
-      if (newAttempts === 1) setFirstTimeCorrect((c) => c + 1);
-      setLastResult('correct');
-      setStatus(`Correct copy: ${expected}`);
-      setMissedCall(null);
-      setTimeout(nextCall, 800);
+      resolveCorrect(expected);
       return;
     }
 
+    const newAttempts = callAttemptsRef.current + 1;
+    callAttemptsRef.current = newAttempts;
+    setCallAttempts(newAttempts);
+    setAttempts((c) => c + 1);
     setRepeats((c) => c + 1);
+
     if (newAttempts < 3) {
       setLastResult('incorrect');
       setStatus('Not quite right');
+      // Clear the entry and give another 4s window (replays if nothing typed).
+      inputRef.current = '';
+      setUserInput('');
+      if (sessionActive && phaseRef.current !== 'sending') {
+        const runId = ++runRef.current;
+        startListening(call, runId);
+      }
     } else {
+      phaseRef.current = 'resolved';
+      clearTimer();
+      if (playbackRef.current) playbackRef.current();
+      setIsPlaying(false);
       setLastResult('missed');
-      setStatus(`Missed Call: ${expected}`);
+      setStatus(`Missed Call: ${expected}. Next call in 2s...`);
       setMissedCall(expected);
-      setTimeout(nextCall, 1500);
+      if (sessionActive) {
+        scheduleAdvance();
+      }
     }
-  };
-
-  const handleRepeat = () => {
-    setRepeats((c) => c + 1);
-    playCurrentCall();
   };
 
   const handleSettingsChange = (key: keyof MorseSettings, value: number | boolean | string) => {
@@ -333,11 +477,14 @@ export default function HomePage() {
             )}
           </div>
           <div className="button-stack">
-            <button onClick={playCurrentCall} disabled={!currentCall || isPlaying || sendCooldown}>
-              {isPlaying ? 'Sending...' : sendCooldown ? 'Wait 2s...' : 'Play call'}
+            <button onClick={handlePlayCall} disabled={!currentCall || sessionActive}>
+              {sessionActive ? (isPlaying ? 'Sending...' : 'Running...') : 'Play call'}
             </button>
-            <button className="secondary" onClick={handleRepeat} disabled={!currentCall || isPlaying || sendCooldown}>
+            <button className="secondary" onClick={handleRepeat} disabled={!currentCall || isPlaying}>
               Repeat key
+            </button>
+            <button className="secondary" onClick={handleStop} disabled={!sessionActive}>
+              Stop
             </button>
             <button className="secondary" onClick={handleNextCall} disabled={!currentCall}>
               New call
@@ -350,7 +497,7 @@ export default function HomePage() {
             <span>Type the call you copied</span>
             <input
               value={userInput}
-              onChange={(e) => setUserInput(e.target.value.toUpperCase())}
+              onChange={(e) => handleInputChange(e.target.value)}
               placeholder="e.g. K1ABC"
               autoComplete="off"
               disabled={!currentCall}

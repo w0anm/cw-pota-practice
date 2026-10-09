@@ -23,67 +23,63 @@ const US_STATES = [
   'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY'
 ];
 
-const CANADIAN_PROVINCES = [
-  'AB', 'BC', 'MB', 'NB', 'NL', 'NS', 'NT', 'NU', 'ON', 'PE', 'QC', 'SK', 'YT'
-];
-
-const VALID_STATES = [...US_STATES, ...CANADIAN_PROVINCES];
-
-function generateRandomRST(): string {
+export function generateRandomRST(): string {
   const readability = Math.floor(Math.random() * 5) + 1; // 1-5
   const strength = Math.floor(Math.random() * 9) + 1;    // 1-9
   const tone = Math.floor(Math.random() * 9) + 1;        // 1-9
   return `${readability}${strength}${tone}`;
 }
 
-function isValidRST(readability: string, strength: string, tone: string): boolean {
-  const r = parseInt(readability, 10);
-  const s = parseInt(strength, 10);
-  const t = parseInt(tone, 10);
-  
-  return (
-    !isNaN(r) && r >= 1 && r <= 5 &&
-    !isNaN(s) && s >= 1 && s <= 9 &&
-    !isNaN(t) && t >= 1 && t <= 9
-  );
+export function randomState(): string {
+  return US_STATES[Math.floor(Math.random() * US_STATES.length)];
 }
 
-function isValidState(state: string): boolean {
-  return VALID_STATES.includes(state.toUpperCase());
+// Cut number: 9 is sent as N (e.g. 599 -> 5NN)
+export function toCutRST(rst: string): string {
+  return rst.replace(/9/g, 'N');
+}
+
+// Normalize an RST so "5NN" and "599" compare equal
+export function normalizeRST(rst: string): string {
+  return rst.trim().toUpperCase().replace(/N/g, '9');
+}
+
+export function formatReport(rst: string, state: string): string {
+  return `${toCutRST(rst)} ${state.toUpperCase()}`;
 }
 
 export function createQSO(
   stationCall: string,
   yourCall: string,
-  yourReadability: string,
-  yourStrength: string,
-  yourTone: string,
-  state: string
+  sentRST: string,
+  sentState: string,
+  enteredRST: string,
+  enteredState: string
 ): QSO {
-  const valid = 
-    isValidRST(yourReadability, yourStrength, yourTone) &&
-    isValidState(state);
+  const rstOk = normalizeRST(enteredRST) === normalizeRST(sentRST);
+  const stateOk = enteredState.trim().toUpperCase() === sentState.toUpperCase();
+  const valid = rstOk && stateOk;
 
   let error: string | undefined;
-  if (!isValidRST(yourReadability, yourStrength, yourTone)) {
-    error = 'Invalid RST format (R:1-5, S:1-9, T:1-9)';
-  } else if (!isValidState(state)) {
-    error = `Invalid state/province: ${state}`;
+  if (!rstOk) {
+    error = `RST did not match what was sent (${toCutRST(sentRST)})`;
+  } else if (!stateOk) {
+    error = `State did not match what was sent (${sentState.toUpperCase()})`;
   }
 
-  const stationRST = generateRandomRST();
+  const entered = normalizeRST(enteredRST).padEnd(3, ' ');
 
   return {
     timestamp: new Date(),
     stationCall,
     yourCall: yourCall.toUpperCase(),
-    yourReadability,
-    yourStrength,
-    yourTone,
-    stationReadability: stationRST[0],
-    stationStrength: stationRST[1],
-    stationTone: stationRST[2],
-    state: state.toUpperCase(),
+    yourReadability: entered[0].trim(),
+    yourStrength: entered[1].trim(),
+    yourTone: entered[2].trim(),
+    stationReadability: sentRST[0],
+    stationStrength: sentRST[1],
+    stationTone: sentRST[2],
+    state: sentState.toUpperCase(),
     valid,
     error,
   };

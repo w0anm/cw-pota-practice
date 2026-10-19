@@ -280,7 +280,15 @@ export default function HomePage() {
     currentCallRef.current = next;
     setCurrentCall(next);
     resetEntry();
-    setStatus('New call ready. Press Play call.');
+    clearTimer();
+    const runId = ++runRef.current;
+    setSessionActive(true);
+    phaseRef.current = 'waiting';
+    setStatus('Get ready... sending in 3s');
+    timerRef.current = window.setTimeout(() => {
+      if (runRef.current !== runId) return;
+      beginCall(next, runId);
+    }, START_DELAY_MS);
   };
 
   const handleInputChange = (value: string) => {
